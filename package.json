@@ -7,7 +7,12 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "migrate": "node src/db/migrate.js",
+    "release": "node src/db/migrate.js",
+    "postinstall": "echo 'Yula backend installed'",
     "test": "jest"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -23,6 +28,7 @@
     "express-rate-limit": "^7.2.0",
     "rate-limit-redis": "^4.2.0",
     "socket.io": "^4.7.5",
+    "twilio": "^5.3.0",
     "aws-sdk": "^2.1602.0",
     "axios": "^1.6.8",
     "expo-server-sdk": "^3.10.0",
