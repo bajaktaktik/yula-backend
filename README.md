@@ -103,3 +103,4 @@ SELECT DISTINCT id, MIN(degree) AS degree FROM network GROUP BY id;
 ```
 
 Sonuç Redis'te `connections:{user_id}` anahtarıyla 24 saat önbelleğe alınır.
+# yula-backend
