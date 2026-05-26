@@ -22,7 +22,10 @@ async function sendTwilio(to, text) {
 }
 
 async function send(to, text) {
-  if (config.env !== 'production') {
+  // Dev modu VEYA SMS_DEBUG_LOG=1 ise → console'a yaz, SMS gönderme.
+  // Production'da Twilio kurulmadan test etmek için: Railway env'e SMS_DEBUG_LOG=1 ekle.
+  const debugLog = process.env.SMS_DEBUG_LOG === '1' || process.env.SMS_DEBUG_LOG === 'true';
+  if (config.env !== 'production' || debugLog) {
     console.log(`[SMS DEV] ${to}: ${text}`);
     return { dev: true };
   }
