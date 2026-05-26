@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const redis = require('../cache/redis');
 const sms = require('../services/sms');
 
-const OTP_TTL_SECONDS = 300; // 5 dakika
+const OTP_TTL_SECONDS = 600; // 10 dakika
 const OTP_LENGTH = 6;
 const MAX_ATTEMPTS = 5;
 
@@ -16,7 +16,8 @@ async function requestOtp(e164) {
   const code = generateOtp();
   const key = `otp:${e164}`;
   await redis.set(key, JSON.stringify({ code, attempts: 0 }), { EX: OTP_TTL_SECONDS });
-  await sms.send(e164, `Yula doğrulama kodunuz: ${code}. Bu kodu kimseyle paylaşmayın.`);
+  // Kısa mesaj — trial'da prefix eklenecek, toplam 160 karakteri geçmesin (tek SMS olsun)
+  await sms.send(e164, `Yula kod: ${code}`);
   return { sentAt: Date.now() };
 }
 
