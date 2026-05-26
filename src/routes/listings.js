@@ -1,0 +1,473 @@
+const express = require('express');
+const Joi = require('joi');
+const pool = require('../db/pool');
+const { requireAuth } = require('../auth/middleware');
+const graph = require('../services/graph');
+
+const router = express.Router();
+
+const createSchema = Joi.object({
+  title: Joi.string().min(3).max(120).required(),
+  // Açıklama min kısıtı yok — kısa veya boş bile olabilir
+  description: Joi.string().max(4000).allow('').default(''),
+  categoryId: Joi.number().integer().required(),
+  // 0 = ücretsiz (hibe) veya "ne verirsen"
+  price: Joi.number().min(0).required(),
+  currency: Joi.string().valid('TRY', 'USD', 'EUR').default('TRY'),
+  locationCity: Joi.string().max(80).optional(),
+  locationDistrict: Joi.string().max(80).optional(),
+  photoUrls: Joi.array().items(Joi.string()).max(8).default([]),
+  // Mobil tarafında her foto için 1000px full + 400px thumb üretiliyor;
+  // ikincisi listelerde hızlı yüklenmek için. Şemada açıkça izin ver, yoksa Joi "not allowed".
+  photoThumbs: Joi.array().items(Joi.string()).max(8).default([]),
+  restrictedToGender: Joi.string().valid('female', 'male').allow(null).optional(),
+  isNegotiable: Joi.boolean().default(false),
+});
+
+// Kullanıcının cinsiyetini DB'den çek (route handler'lar için yardımcı)
+async function getMyGender(userId) {
+  const { rows } = await pool.query('SELECT gender FROM users WHERE id = $1', [userId]);
+  return rows[0]?.gender || null;
+}
+
+// SQL parçası: bu kullanıcının cinsiyet kısıtlı ilanları görme kuralı.
+// MAHREMİYET: kısıtlı ilanlar opposite cinsiyete ve cinsiyetsiz kullanıcılara
+// HİÇ görünmez — varlıklarından dahi haberdar olmazlar.
+function genderFilter(viewerGender) {
+  if (viewerGender === 'female' || viewerGender === 'male') {
+    return `(l.restricted_to_gender IS NULL OR l.restricted_to_gender = '${viewerGender}')`;
+  }
+  // Cinsiyet belirtmemiş veya null — sadece kısıtsız ilanları görür
+  return `(l.restricted_to_gender IS NULL)`;
+}
+
+// GET /listings  →  kullanıcının görebildiği akış
+// Sorgu parametreleri:
+//   q          : arama metni (title + description üzerinde ILIKE)
+//   categoryId : kategori id (parent ise tüm alt kategoriler de dahil edilir)
+//   minPrice   : min fiyat
+//   maxPrice   : max fiyat
+//   city       : şehir
+//   limit, offset
+router.get('/', requireAuth, async (req, res, next) => {
+  try {
+    const visible = await graph.getVisibleUserIds(req.userId); // Map<id, degree>
+    if (visible.size === 0) {
+      return res.json({ listings: [], message: 'Rehberinde henüz Yula kullanan kimse yok. Arkadaşlarını davet et!' });
+    }
+    const ids = [...visible.keys()];
+    const myGender = await getMyGender(req.userId);
+    const limit = Math.min(parseInt(req.query.limit || '30', 10), 100);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const categoryId = req.query.categoryId ? parseInt(req.query.categoryId, 10) : null;
+    const q = (req.query.q || '').toString().trim();
+    const minPrice = req.query.minPrice ? Number(req.query.minPrice) : null;
+    const maxPrice = req.query.maxPrice ? Number(req.query.maxPrice) : null;
+    const city = req.query.city ? req.query.city.toString().trim() : null;
+    const days = req.query.days ? Math.max(1, Math.min(parseInt(req.query.days, 10), 365)) : null;
+    const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
+    const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
+    const sellerId = req.query.sellerId ? String(req.query.sellerId) : null;
+
+    const filters = [
+      'l.user_id = ANY($1::uuid[])',
+      "l.status = 'active'",
+      // Cinsiyet kısıtı — kullanıcı kendi cinsiyetine uyan ilanları görür
+      genderFilter(myGender),
+      // Kendi ilanlarını akışta görmesin (sadece İlanlarım sekmesinde)
+      `l.user_id <> '${req.userId}'`,
+    ];
+    const params = [ids];
+
+    // Tarih filtresi (ana akış için son N gün)
+    if (days) {
+      filters.push(`l.created_at >= now() - interval '${days} days'`);
+    }
+
+    // Ücretsiz ürün filtresi (price = 0)
+    if (freeOnly) {
+      // "Ücretsiz" sekmesi: hem fiyat=0 olanlar hem "ne verirsen" olanlar
+      filters.push(`(l.price = 0 OR l.is_negotiable = TRUE)`);
+    }
+
+    // Belirli satıcının ilanları
+    if (sellerId) {
+      params.push(sellerId);
+      filters.push(`l.user_id = $${params.length}`);
+    }
+
+    // Kategori filtresi: id verildiyse kendisi + alt kategorileri
+    if (categoryId) {
+      params.push(categoryId);
+      filters.push(`l.category_id IN (
+        SELECT id FROM categories WHERE id = $${params.length} OR parent_id = $${params.length}
+      )`);
+    }
+
+    // Tam metin arama (ILIKE — basit ve Türkçe karakter dostu)
+    if (q) {
+      params.push(`%${q}%`);
+      filters.push(`(l.title ILIKE $${params.length} OR l.description ILIKE $${params.length})`);
+    }
+
+    if (minPrice != null && !Number.isNaN(minPrice)) {
+      params.push(minPrice);
+      filters.push(`l.price >= $${params.length}`);
+    }
+    if (maxPrice != null && !Number.isNaN(maxPrice)) {
+      params.push(maxPrice);
+      filters.push(`l.price <= $${params.length}`);
+    }
+    if (city) {
+      params.push(city);
+      filters.push(`l.location_city ILIKE $${params.length}`);
+    }
+
+    // Mahremiyet notu: aracı (1. derece) kişinin kim olduğunu istemciye dönmüyoruz.
+    // Sadece sellerın derece bilgisini (1 veya 2) dönüyoruz.
+
+    // Gizlenen ilanlar ve favori durumu için userId'yi parametrize edelim
+    params.push(req.userId); // $N — favoriler & gizlenenler için
+    const userParamIdx = params.length;
+    params.push(limit, offset); // limit ve offset en sonda
+
+    // Gizlenen ilanları akıştan çıkar (göz açık olsa includeHidden=1 olur ve filtre uygulanmaz)
+    if (!includeHidden) {
+      filters.push(`l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $${userParamIdx})`);
+    }
+
+    // Satıcı adı: bakan kullanıcının rehberinde bu kişi varsa o isimle göster,
+    // yoksa kullanıcının kendi belirttiği display_name'i göster.
+    const sql = `
+      SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
+             l.location_city, l.location_district, l.created_at,
+             l.category_id, c.name AS category_name, c.slug AS category_slug,
+             l.user_id,
+             COALESCE(uc.contact_name, u.display_name) AS seller_name,
+             u.avatar_url AS seller_avatar,
+             -- Liste için sadece vitrin (ilk) fotoğrafı — base64'lerle response şişmesin
+             -- Thumbnail (varsa) yoksa eski full url'e fallback
+             (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+             (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
+             EXISTS(SELECT 1 FROM favorites WHERE user_id = $${userParamIdx} AND listing_id = l.id) AS is_favorite,
+             EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $${userParamIdx} AND listing_id = l.id) AS is_hidden,
+             -- Son 7 günde bu satıcıyla mesajlaşmış mıyım?
+             EXISTS(
+               SELECT 1 FROM messages m
+               JOIN conversations conv ON conv.id = m.conversation_id
+               WHERE m.sent_at >= now() - interval '7 days'
+                 AND (
+                   (conv.buyer_id = $${userParamIdx} AND conv.seller_id = l.user_id) OR
+                   (conv.seller_id = $${userParamIdx} AND conv.buyer_id = l.user_id)
+                 )
+             ) AS recent_contact
+      FROM listings l
+      JOIN users u ON u.id = l.user_id
+      LEFT JOIN categories c ON c.id = l.category_id
+      LEFT JOIN user_contacts uc ON uc.user_id = $${userParamIdx} AND uc.contact_phone_hash = u.phone_hash
+      WHERE ${filters.join(' AND ')}
+      ORDER BY l.created_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}
+    `;
+    const { rows } = await pool.query(sql, params);
+
+    const result = rows.map((row) => ({
+      ...row,
+      degree: 1, // Sadece rehberdeki kişiler
+      // Mobil tarafında photos[0] ile vitrin gösteriliyor → backward-compat array sun
+      photos: row.cover_photo ? [row.cover_photo] : [],
+      photo_count: row.photo_count || 0,
+    }));
+
+    res.json({ listings: result, count: result.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /listings/mine  →  kullanıcının kendi ilanları (aktif, satılmış, vb. hepsi)
+router.get('/mine', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT l.id, l.title, l.description, l.price, l.currency,
+              l.location_city, l.location_district, l.created_at, l.updated_at, l.status,
+              l.category_id, c.name AS category_name,
+              l.restricted_to_gender, l.is_negotiable,
+              (SELECT p.url FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count
+       FROM listings l
+       LEFT JOIN categories c ON c.id = l.category_id
+       WHERE l.user_id = $1
+       ORDER BY l.created_at DESC`,
+      [req.userId]
+    );
+    const result = rows.map((r) => ({
+      ...r,
+      photos: r.cover_photo ? [r.cover_photo] : [],
+      photo_count: r.photo_count || 0,
+    }));
+    res.json({ listings: result, count: result.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /listings/garage-sale  →  son 48 saatte verilen ilanlar (network filtreli)
+// "Garaj Satış" sekmesi için reels-style görüntüleme akışı.
+router.get('/garage-sale', requireAuth, async (req, res, next) => {
+  try {
+    const visible = await graph.getVisibleUserIds(req.userId);
+    if (visible.size === 0) {
+      return res.json({ listings: [], message: 'Henüz tanıdığın yok. Önce rehberini senkronize et.' });
+    }
+    const ids = [...visible.keys()];
+    const hours = Math.min(parseInt(req.query.hours || '48', 10), 168); // max 7 gün
+    const myGender = await getMyGender(req.userId);
+    const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
+    const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
+
+    const sql = `
+      SELECT l.id, l.title, l.description, l.price, l.currency,
+             l.location_city, l.location_district, l.created_at,
+             l.category_id, c.name AS category_name,
+             l.user_id,
+             COALESCE(uc.contact_name, u.display_name) AS seller_name,
+             u.avatar_url AS seller_avatar,
+             (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+             (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
+             EXISTS(SELECT 1 FROM favorites WHERE user_id = $3 AND listing_id = l.id) AS is_favorite,
+             EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $3 AND listing_id = l.id) AS is_hidden,
+             l.is_negotiable
+      FROM listings l
+      JOIN users u ON u.id = l.user_id
+      LEFT JOIN categories c ON c.id = l.category_id
+      LEFT JOIN user_contacts uc ON uc.user_id = $3 AND uc.contact_phone_hash = u.phone_hash
+      WHERE l.user_id = ANY($1::uuid[])
+        AND l.user_id <> $3
+        AND l.status = 'active'
+        AND l.created_at >= now() - ($2 || ' hours')::interval
+        AND ${genderFilter(myGender)}
+        ${freeOnly ? 'AND (l.price = 0 OR l.is_negotiable = TRUE)' : ''}
+        ${includeHidden ? '' : 'AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $3)'}
+      ORDER BY l.created_at DESC
+    `;
+    const { rows } = await pool.query(sql, [ids, hours, req.userId]);
+
+    const result = rows.map((row) => ({
+      ...row,
+      degree: 1,
+      photos: row.cover_photo ? [row.cover_photo] : [],
+      photo_count: row.photo_count || 0,
+    }));
+
+    res.json({ listings: result, count: result.length, hours });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /listings/:id
+router.get('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const visible = await graph.getVisibleUserIds(req.userId);
+    const myGender = await getMyGender(req.userId);
+    const { rows } = await pool.query(
+      `SELECT l.*,
+              COALESCE(uc.contact_name, u.display_name) AS seller_name,
+              u.avatar_url AS seller_avatar,
+              c.name AS category_name,
+              c.slug AS category_slug,
+              parent.id AS parent_category_id,
+              parent.name AS parent_category_name,
+              (SELECT json_agg(p.url ORDER BY p.ordering) FROM listing_photos p WHERE p.listing_id = l.id) AS photos,
+              (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering) FROM listing_photos p WHERE p.listing_id = l.id) AS photo_thumbs,
+              EXISTS(SELECT 1 FROM favorites WHERE user_id = $2 AND listing_id = l.id) AS is_favorite,
+              EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $2 AND listing_id = l.id) AS is_hidden
+       FROM listings l
+       JOIN users u ON u.id = l.user_id
+       LEFT JOIN user_contacts uc ON uc.user_id = $2 AND uc.contact_phone_hash = u.phone_hash
+       LEFT JOIN categories c ON c.id = l.category_id
+       LEFT JOIN categories parent ON parent.id = c.parent_id
+       WHERE l.id = $1`,
+      [req.params.id, req.userId]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const listing = rows[0];
+
+    // MAHREMİYET: cinsiyet kısıtı varsa ve eşleşmiyorsa 404 (sanki ilan yokmuş gibi)
+    // Sahibi her zaman görebilir.
+    if (listing.user_id !== req.userId && listing.restricted_to_gender) {
+      if (listing.restricted_to_gender !== myGender) {
+        return res.status(404).json({ error: 'not_found' });
+      }
+    }
+
+    if (listing.user_id !== req.userId && !visible.has(listing.user_id)) {
+      return res.status(403).json({ error: 'not_in_your_network' });
+    }
+    res.json({
+      ...listing,
+      degree: listing.user_id === req.userId ? 0 : visible.get(listing.user_id),
+      photos: listing.photos || [],
+      photo_thumbs: listing.photo_thumbs || [],
+      // MAHREMİYET: sadece sahibi kendi kısıtını görsün; başkalarına alanı bile gönderme
+      restricted_to_gender: listing.user_id === req.userId ? listing.restricted_to_gender : undefined,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /listings
+router.post('/', requireAuth, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { value, error } = createSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+    await client.query('BEGIN');
+    // Eğer kullanıcı cinsiyet kısıtı istiyorsa, kendi cinsiyetiyle uyumlu olmalı
+    let restrictedTo = null;
+    if (value.restrictedToGender) {
+      const myGender = await getMyGender(req.userId);
+      if (myGender && myGender === value.restrictedToGender) {
+        restrictedTo = value.restrictedToGender;
+      }
+      // Aksi takdirde sessizce yok say (kullanıcı kendi cinsiyetinin dışındaki bir kısıtı koyamaz)
+    }
+    const ins = await client.query(
+      `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable]
+    );
+    const listing = ins.rows[0];
+    const thumbs = Array.isArray(req.body.photoThumbs) ? req.body.photoThumbs : [];
+    for (let i = 0; i < value.photoUrls.length; i++) {
+      await client.query(
+        'INSERT INTO listing_photos (listing_id, url, thumb_url, ordering) VALUES ($1, $2, $3, $4)',
+        [listing.id, value.photoUrls[i], thumbs[i] || null, i]
+      );
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ listing });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /listings/:id  (sadece sahibi)
+// İçerik (title, desc, price...) + opsiyonel kategori değişikliği + opsiyonel foto değişikliği
+router.patch('/:id', requireAuth, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Önce sahiplik kontrolü + ESKİ FİYATI öğren (fiyat değişti mi bakacağız)
+    const own = await client.query(
+      'SELECT id, price FROM listings WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (own.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'not_found' });
+    }
+    const oldPrice = Number(own.rows[0].price);
+
+    // Basit alan güncellemeleri
+    const fields = ['title', 'description', 'price', 'status', 'location_city', 'location_district'];
+    const updates = [];
+    const params = [];
+    for (const f of fields) {
+      const camel = f.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      if (req.body[camel] !== undefined) {
+        params.push(req.body[camel]);
+        updates.push(`${f} = $${params.length}`);
+      }
+    }
+    // Ekstra: categoryId, isNegotiable, restrictedToGender
+    if (req.body.categoryId !== undefined) {
+      params.push(req.body.categoryId);
+      updates.push(`category_id = $${params.length}`);
+    }
+    if (req.body.isNegotiable !== undefined) {
+      params.push(!!req.body.isNegotiable);
+      updates.push(`is_negotiable = $${params.length}`);
+    }
+    if (req.body.restrictedToGender !== undefined) {
+      params.push(req.body.restrictedToGender || null);
+      updates.push(`restricted_to_gender = $${params.length}`);
+    }
+
+    if (updates.length > 0) {
+      params.push(req.params.id, req.userId);
+      await client.query(
+        `UPDATE listings SET ${updates.join(', ')}, updated_at = now()
+         WHERE id = $${params.length - 1} AND user_id = $${params.length}`,
+        params
+      );
+    }
+
+    // Foto güncellemesi (varsa): eskileri sil, yenileri ordering ile ekle
+    if (Array.isArray(req.body.photoUrls)) {
+      await client.query('DELETE FROM listing_photos WHERE listing_id = $1', [req.params.id]);
+      const thumbs = Array.isArray(req.body.photoThumbs) ? req.body.photoThumbs : [];
+      for (let i = 0; i < req.body.photoUrls.length; i++) {
+        await client.query(
+          'INSERT INTO listing_photos (listing_id, url, thumb_url, ordering) VALUES ($1, $2, $3, $4)',
+          [req.params.id, req.body.photoUrls[i], thumbs[i] || null, i]
+        );
+      }
+    }
+
+    const { rows } = await client.query('SELECT * FROM listings WHERE id = $1', [req.params.id]);
+
+    // Fiyat değiştiyse — favorileyen kullanıcılara bildirim oluştur
+    const newPrice = Number(rows[0].price);
+    if (req.body.price !== undefined && oldPrice !== newPrice) {
+      const favs = await client.query(
+        'SELECT user_id FROM favorites WHERE listing_id = $1',
+        [req.params.id]
+      );
+      for (const f of favs.rows) {
+        if (f.user_id === req.userId) continue; // kendi ilanını kendine bildirme
+        await client.query(
+          `INSERT INTO notifications (user_id, type, listing_id, payload)
+           VALUES ($1, 'price_change', $2, $3)`,
+          [
+            f.user_id,
+            req.params.id,
+            JSON.stringify({ old_price: oldPrice, new_price: newPrice }),
+          ]
+        );
+      }
+      if (favs.rows.length > 0) {
+        console.log(`[notif] price_change ${oldPrice}→${newPrice}: ${favs.rows.length} kullanıcıya bildirim`);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ listing: rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    next(err);
+  } finally {
+    client.release();
+  }
+});
+
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      'DELETE FROM listings WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;
