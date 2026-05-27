@@ -27,10 +27,13 @@ CREATE TABLE IF NOT EXISTS user_contacts (
   user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   contact_phone_hash   TEXT NOT NULL,
   contact_name         TEXT, -- opsiyonel, kullanicinin verdigi isim
+  is_favorite          BOOLEAN NOT NULL DEFAULT FALSE, -- telefon rehberinde "favori" mi
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, contact_phone_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_user_contacts_hash ON user_contacts(contact_phone_hash);
+-- Migration
+ALTER TABLE user_contacts ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Kategoriler (hiyerarsik)
 CREATE TABLE IF NOT EXISTS categories (

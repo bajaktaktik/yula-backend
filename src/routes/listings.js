@@ -150,17 +150,7 @@ router.get('/', requireAuth, async (req, res, next) => {
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
              EXISTS(SELECT 1 FROM favorites WHERE user_id = $${userParamIdx} AND listing_id = l.id) AS is_favorite,
-             EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $${userParamIdx} AND listing_id = l.id) AS is_hidden,
-             -- Son 7 günde bu satıcıyla mesajlaşmış mıyım?
-             EXISTS(
-               SELECT 1 FROM messages m
-               JOIN conversations conv ON conv.id = m.conversation_id
-               WHERE m.sent_at >= now() - interval '7 days'
-                 AND (
-                   (conv.buyer_id = $${userParamIdx} AND conv.seller_id = l.user_id) OR
-                   (conv.seller_id = $${userParamIdx} AND conv.buyer_id = l.user_id)
-                 )
-             ) AS recent_contact
+             EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $${userParamIdx} AND listing_id = l.id) AS is_hidden
       FROM listings l
       JOIN users u ON u.id = l.user_id
       LEFT JOIN categories c ON c.id = l.category_id

@@ -9,14 +9,13 @@ const router = express.Router();
 
 const syncSchema = Joi.object({
   // İstemci her bir rehber kişisi için { sha256, name } gönderir.
-  // sha256: E.164 normalize edilmiş numaranın SHA-256 hex hash'i (alt çizgisiz, küçük harf)
   contacts: Joi.array().items(
     Joi.object({
       sha256: Joi.string().length(64).required(),
       name: Joi.string().max(120).optional(),
     })
   ).min(1).max(5000).required(),
-  replace: Joi.boolean().default(true), // true ise mevcut rehber silinir
+  replace: Joi.boolean().default(true),
 });
 
 router.post('/sync', requireAuth, async (req, res, next) => {
@@ -49,7 +48,8 @@ router.post('/sync', requireAuth, async (req, res, next) => {
       await client.query(
         `INSERT INTO user_contacts (user_id, contact_phone_hash, contact_name)
          VALUES ${params.join(',')}
-         ON CONFLICT (user_id, contact_phone_hash) DO UPDATE SET contact_name = EXCLUDED.contact_name`,
+         ON CONFLICT (user_id, contact_phone_hash) DO UPDATE
+           SET contact_name = EXCLUDED.contact_name`,
         [req.userId, ...values]
       );
     }
