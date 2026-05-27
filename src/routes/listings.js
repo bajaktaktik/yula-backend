@@ -96,11 +96,17 @@ router.get('/', requireAuth, async (req, res, next) => {
       filters.push(`l.user_id = $${params.length}`);
     }
 
-    // Kategori filtresi: id verildiyse kendisi + alt kategorileri
+    // Kategori filtresi: id verildiyse kendisi + TÜM alt seviye (recursive: L2, L3, ...)
     if (categoryId) {
       params.push(categoryId);
       filters.push(`l.category_id IN (
-        SELECT id FROM categories WHERE id = $${params.length} OR parent_id = $${params.length}
+        WITH RECURSIVE descendants AS (
+          SELECT id FROM categories WHERE id = $${params.length}
+          UNION ALL
+          SELECT c.id FROM categories c
+          INNER JOIN descendants d ON c.parent_id = d.id
+        )
+        SELECT id FROM descendants
       )`);
     }
 
