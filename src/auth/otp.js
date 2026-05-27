@@ -1,27 +1,45 @@
-// OTP üretme, kaydetme ve doğrulama. Redis'te tutulur.
+// OTP — iki yol:
+//   1) Twilio Verify API (production önerilen): TWILIO_VERIFY_SID env'de varsa kullanılır
+//   2) Manuel SMS + Redis (fallback): trial veya başka sağlayıcılar için
+//
+// Verify yolunda kod üretimi/doğrulaması Twilio'da; Redis'e dokunulmaz.
+
 const crypto = require('crypto');
 const redis = require('../cache/redis');
 const sms = require('../services/sms');
+const verify = require('../services/twilio-verify');
 
 const OTP_TTL_SECONDS = 600; // 10 dakika
 const OTP_LENGTH = 6;
 const MAX_ATTEMPTS = 5;
 
 function generateOtp() {
-  // 6 haneli, baştaki 0'ları koruyan rastgele kod
   return crypto.randomInt(0, 1_000_000).toString().padStart(OTP_LENGTH, '0');
 }
 
 async function requestOtp(e164) {
+  // Önce Verify'a bak
+  if (verify.isEnabled()) {
+    await verify.startVerification(e164);
+    return { sentAt: Date.now(), provider: 'twilio-verify' };
+  }
+  // Fallback: manuel kod + sms
   const code = generateOtp();
   const key = `otp:${e164}`;
   await redis.set(key, JSON.stringify({ code, attempts: 0 }), { EX: OTP_TTL_SECONDS });
-  // Kısa mesaj — trial'da prefix eklenecek, toplam 160 karakteri geçmesin (tek SMS olsun)
   await sms.send(e164, `Yula kod: ${code}`);
-  return { sentAt: Date.now() };
+  return { sentAt: Date.now(), provider: 'manual' };
 }
 
 async function verifyOtp(e164, code) {
+  // Verify enabled ise Twilio'ya sor
+  if (verify.isEnabled()) {
+    const result = await verify.checkVerification(e164, code);
+    if (result.ok) return { ok: true };
+    return { ok: false, reason: result.status === 'expired' ? 'expired' : 'invalid' };
+  }
+
+  // Fallback: Redis manuel doğrulama
   const key = `otp:${e164}`;
   const raw = await redis.get(key);
   if (!raw) return { ok: false, reason: 'expired' };
