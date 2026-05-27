@@ -64,6 +64,10 @@ router.get('/', requireAuth, async (req, res, next) => {
     const minPrice = req.query.minPrice ? Number(req.query.minPrice) : null;
     const maxPrice = req.query.maxPrice ? Number(req.query.maxPrice) : null;
     const city = req.query.city ? req.query.city.toString().trim() : null;
+    // Çoklu il filtresi: ?cities=İstanbul,Ankara
+    const cities = req.query.cities
+      ? req.query.cities.toString().split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
     const days = req.query.days ? Math.max(1, Math.min(parseInt(req.query.days, 10), 365)) : null;
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
@@ -124,7 +128,11 @@ router.get('/', requireAuth, async (req, res, next) => {
       params.push(maxPrice);
       filters.push(`l.price <= $${params.length}`);
     }
-    if (city) {
+    if (cities && cities.length > 0) {
+      // Çoklu il — l.location_city herhangi birine eşit (case-insensitive)
+      params.push(cities);
+      filters.push(`LOWER(l.location_city) = ANY(SELECT LOWER(c) FROM unnest($${params.length}::text[]) AS c)`);
+    } else if (city) {
       params.push(city);
       filters.push(`l.location_city ILIKE $${params.length}`);
     }
