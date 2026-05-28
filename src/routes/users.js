@@ -101,10 +101,21 @@ router.delete('/me/push-token', requireAuth, async (req, res, next) => {
 
 router.delete('/me', requireAuth, async (req, res, next) => {
   try {
-    // KVKK: kullanıcı verisini siler
-    await pool.query('DELETE FROM users WHERE id = $1', [req.userId]);
+    // KVKK / App Store / Play Store gereği: kullanıcının tüm verisini sil.
+    // Tüm ilgili tablolar ON DELETE CASCADE olduğu için users satırını silmek
+    // ilanları, mesajları, rehber bağlantılarını, bildirimleri, raporları,
+    // blokları, gender-change kayıtlarını otomatik siler.
+    const result = await pool.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id, phone_hash',
+      [req.userId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    console.log(`[ACCOUNT-DELETE] user=${req.userId} phone_hash=${result.rows[0].phone_hash?.slice(0, 8)}...`);
     res.status(204).end();
   } catch (err) {
+    console.error('[ACCOUNT-DELETE] error:', err);
     next(err);
   }
 });
