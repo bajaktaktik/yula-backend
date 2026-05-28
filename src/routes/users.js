@@ -99,6 +99,24 @@ router.delete('/me/push-token', requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /users/me/network-size →
+// Kullanıcının rehberindeki numaralardan kaç tanesi Abadan'a kayıtlı.
+// (Kendisi hariç.) Ana sayfa header'ında "Abadan · 23 kişi" göstermek için.
+router.get('/me/network-size', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(DISTINCT u.id)::int AS count
+       FROM user_contacts uc
+       JOIN users u ON u.phone_hash = uc.contact_phone_hash
+       WHERE uc.user_id = $1 AND u.id <> $1`,
+      [req.userId]
+    );
+    res.json({ count: rows[0]?.count || 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.delete('/me', requireAuth, async (req, res, next) => {
   try {
     // KVKK / App Store / Play Store gereği: kullanıcının tüm verisini sil.
