@@ -1,5 +1,5 @@
 // Rehber tabanlı görünürlük: SADECE 1. derece — kullanıcının kendi telefon
-// rehberinde olan ve Yula'ya kayıtlı kişiler.
+// rehberinde olan ve Abadan'a kayıtlı kişiler.
 // 2. derece (tanıdığın tanıdığı) MAHREMİYET nedeniyle kaldırıldı.
 
 const pool = require('../db/pool');
@@ -9,7 +9,7 @@ const CACHE_TTL_SECONDS = 24 * 60 * 60; // 24 saat
 
 /**
  * Kullanıcının görebileceği diğer kullanıcı id'lerini döner.
- * Sadece 1. derece — rehberinde olup Yula'ya kayıtlı kişiler.
+ * Sadece 1. derece — rehberinde olup Abadan'a kayıtlı kişiler.
  * Geri dönüş: Map<user_id, 1>  (degree daima 1; alan UI uyumluluğu için)
  */
 async function getVisibleUserIds(userId) {

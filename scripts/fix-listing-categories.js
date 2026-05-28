@@ -1,5 +1,5 @@
 // category_id=NULL olan mevcut ilanları title/açıklama anahtar kelimelerine göre
-// yulacat.txt'deki yeni kategorilere eşleştirir.
+// abadancat.txt'deki yeni kategorilere eşleştirir.
 //
 // Kullanım: node scripts/fix-listing-categories.js
 

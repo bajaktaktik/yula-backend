@@ -53,7 +53,7 @@ router.get('/', requireAuth, async (req, res, next) => {
   try {
     const visible = await graph.getVisibleUserIds(req.userId); // Map<id, degree>
     if (visible.size === 0) {
-      return res.json({ listings: [], message: 'Rehberinde henüz Yula kullanan kimse yok. Arkadaşlarını davet et!' });
+      return res.json({ listings: [], message: 'Rehberinde henüz Abadan kullanan kimse yok. Arkadaşlarını davet et!' });
     }
     const ids = [...visible.keys()];
     const myGender = await getMyGender(req.userId);

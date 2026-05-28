@@ -17,7 +17,7 @@ module.exports = {
     netgsm: {
       usercode: process.env.NETGSM_USERCODE,
       password: process.env.NETGSM_PASSWORD,
-      header: process.env.NETGSM_HEADER || 'YULA',
+      header: process.env.NETGSM_HEADER || 'ABADAN',
     },
     twilio: {
       sid: process.env.TWILIO_ACCOUNT_SID,

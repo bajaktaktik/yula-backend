@@ -1,4 +1,4 @@
-# Yula Backend
+# Abadan Backend
 
 Rehber tabanlı görünürlüğe sahip ikinci el alışveriş uygulamasının REST + WebSocket API'si.
 
@@ -13,12 +13,12 @@ cp .env.example .env
 # .env dosyasındaki secretleri doldur
 
 # PostgreSQL'i başlat (Docker ile)
-docker run -d --name yula-pg -p 5432:5432 \
-  -e POSTGRES_USER=yula -e POSTGRES_PASSWORD=yula \
-  -e POSTGRES_DB=yula postgres:16
+docker run -d --name abadan-pg -p 5432:5432 \
+  -e POSTGRES_USER=abadan -e POSTGRES_PASSWORD=abadan \
+  -e POSTGRES_DB=abadan postgres:16
 
 # Redis
-docker run -d --name yula-redis -p 6379:6379 redis:7
+docker run -d --name abadan-redis -p 6379:6379 redis:7
 
 # Şemayı yükle
 npm run migrate
@@ -103,4 +103,4 @@ SELECT DISTINCT id, MIN(degree) AS degree FROM network GROUP BY id;
 ```
 
 Sonuç Redis'te `connections:{user_id}` anahtarıyla 24 saat önbelleğe alınır.
-# yula-backend
+# abadan-backend

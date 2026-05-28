@@ -1,16 +1,16 @@
-// Yula - Kategorileri yulacat.txt (sahibinden.com formatı) dosyasından kurar.
+// Abadan - Kategorileri abadancat.txt (sahibinden.com formatı) dosyasından kurar.
 // Kullanım: node scripts/seed-categories.js
 //
 // Bu script:
 //   1. categories tablosunu temizler
 //   2. listings.category_id'leri NULL'lar (FK kırılmasın)
-//   3. yulacat.txt'yi okur, recursive olarak hiyerarşik kategori ağacını oluşturur
+//   3. abadancat.txt'yi okur, recursive olarak hiyerarşik kategori ağacını oluşturur
 
 const fs = require('fs');
 const path = require('path');
 const pool = require('../src/db/pool');
 
-const CAT_FILE = path.join(__dirname, '..', '..', 'yulacat.txt');
+const CAT_FILE = path.join(__dirname, '..', '..', 'abadancat.txt');
 
 // Ana kategori slug'larına emoji ikonları
 const TOP_ICONS = {

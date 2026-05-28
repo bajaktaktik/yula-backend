@@ -1,5 +1,5 @@
 // Vasıta altındaki çift Otomobil/Motosiklet kategorilerini birleştirir.
-// Doğru olan: vasita-otomobil, vasita-motosiklet (yulacat.txt'den gelen)
+// Doğru olan: vasita-otomobil, vasita-motosiklet (abadancat.txt'den gelen)
 // Yanlış (eski seed kalıntısı): slug=otomobil, slug=motosiklet
 //
 // Yapılan:

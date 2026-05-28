@@ -1,4 +1,4 @@
--- Yula veritabani semasi
+-- Abadan veritabani semasi
 -- PostgreSQL 16
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";

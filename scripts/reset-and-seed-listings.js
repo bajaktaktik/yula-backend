@@ -1,4 +1,4 @@
-// Yula - Tüm ilanları sil ve 20 yeni karışık ilan ekle.
+// Abadan - Tüm ilanları sil ve 20 yeni karışık ilan ekle.
 // Otomobil ilanlarında 3'er fotoğraf, ücretsiz/ne verirsen ilanları dahil.
 // Kullanım: node scripts/reset-and-seed-listings.js
 
@@ -7,10 +7,10 @@ const pool = require('../src/db/pool');
 const redis = require('../src/cache/redis');
 
 function fakeHash(seed) {
-  return crypto.createHash('sha256').update('yula-seed:' + seed).digest('hex');
+  return crypto.createHash('sha256').update('abadan-seed:' + seed).digest('hex');
 }
 
-// Yeni 20 ilan — kategori slug'ları yulacat.txt'den
+// Yeni 20 ilan — kategori slug'ları abadancat.txt'den
 const LISTINGS = [
   // === OTOMOBİL (3 ilan, 3'er foto) ===
   {

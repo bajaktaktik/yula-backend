@@ -1,4 +1,4 @@
-// Yula - Demo ilan seed scripti
+// Abadan - Demo ilan seed scripti
 // Kullanım: node scripts/seed-listings.js +905XXXXXXXX
 //   Verdiğin telefon ile uygulamada giriş yapmış olmalısın.
 //   Script o kullanıcıyı bulup rehberine 8 sahte kullanıcı ekler ve onlara ilan oluşturur.
@@ -14,7 +14,7 @@ function computeMyPhoneHash(e164) {
 }
 
 function fakeHash(seed) {
-  return crypto.createHash('sha256').update('yula-seed:' + seed).digest('hex');
+  return crypto.createHash('sha256').update('abadan-seed:' + seed).digest('hex');
 }
 
 // 8 sahte kullanıcı (rehberine eklenecek = 1. derece)

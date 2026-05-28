@@ -162,7 +162,7 @@ async function createListings(client, users) {
 }
 
 async function main() {
-  console.log('🚀 Yula tam sıfırlama + test seed başlatılıyor...\n');
+  console.log('🚀 Abadan tam sıfırlama + test seed başlatılıyor...\n');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

@@ -57,5 +57,5 @@ const io = new SocketServer(server, { cors: { origin: '*' } });
 setupChat(io);
 
 server.listen(config.port, () => {
-  console.log(`Yula API ${config.port} portunda dinliyor (${config.env})`);
+  console.log(`Abadan API ${config.port} portunda dinliyor (${config.env})`);
 });

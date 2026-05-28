@@ -1,4 +1,4 @@
-// Yula - Vasıta > Otomobil ve Motosiklet altına Türkiye pazarındaki markalar.
+// Abadan - Vasıta > Otomobil ve Motosiklet altına Türkiye pazarındaki markalar.
 // Kullanım: node scripts/seed-vehicle-brands.js
 // (Önce seed-categories.js çalıştırılmış olmalı)
 

@@ -1,5 +1,5 @@
 // Yeni test kullanıcısının rehberine TÜM seed kullanıcılarını ekler.
-// Aksi halde yeni kullanıcı rehberinde Yula'lı kimse olmadığı için ilan göremez.
+// Aksi halde yeni kullanıcı rehberinde Abadan'lı kimse olmadığı için ilan göremez.
 //
 // Kullanım:
 //   node scripts/link-contacts-to-seeds.js              → en son aktif kullanıcı için

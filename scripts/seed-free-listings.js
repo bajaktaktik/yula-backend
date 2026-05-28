@@ -1,4 +1,4 @@
-// Yula - Ücretsiz (hibe) ilan seed scripti.
+// Abadan - Ücretsiz (hibe) ilan seed scripti.
 // 7-8 adet "fiyat = 0" ilan ekler. Sahipler mevcut sahte kullanıcılardır.
 // Kullanım: node scripts/seed-free-listings.js
 
@@ -7,7 +7,7 @@ const pool = require('../src/db/pool');
 const redis = require('../src/cache/redis');
 
 function fakeHash(seed) {
-  return crypto.createHash('sha256').update('yula-seed:' + seed).digest('hex');
+  return crypto.createHash('sha256').update('abadan-seed:' + seed).digest('hex');
 }
 
 const FREE_LISTINGS = [

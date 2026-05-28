@@ -202,7 +202,7 @@ router.post('/:id/messages', requireAuth, async (req, res, next) => {
         // Gönderici ismini alıcının rehberindeki ada göre çek
         const meta = await pool.query(
           `SELECT
-             COALESCE(uc.contact_name, sender.display_name, 'Yula kullanıcısı') AS sender_name,
+             COALESCE(uc.contact_name, sender.display_name, 'Abadan kullanıcısı') AS sender_name,
              l.title AS listing_title
            FROM users sender
            LEFT JOIN user_contacts uc

@@ -1,4 +1,4 @@
-// Yula - "Ne Verirsen" ilan seed scripti.
+// Abadan - "Ne Verirsen" ilan seed scripti.
 // 4 adet is_negotiable=true ilan ekler. Sahipler mevcut sahte kullanıcılardır.
 // Kullanım: node scripts/seed-negotiable-listings.js
 
@@ -7,7 +7,7 @@ const pool = require('../src/db/pool');
 const redis = require('../src/cache/redis');
 
 function fakeHash(seed) {
-  return crypto.createHash('sha256').update('yula-seed:' + seed).digest('hex');
+  return crypto.createHash('sha256').update('abadan-seed:' + seed).digest('hex');
 }
 
 const NEG_LISTINGS = [

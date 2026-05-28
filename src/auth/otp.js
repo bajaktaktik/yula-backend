@@ -27,7 +27,7 @@ async function requestOtp(e164) {
   const code = generateOtp();
   const key = `otp:${e164}`;
   await redis.set(key, JSON.stringify({ code, attempts: 0 }), { EX: OTP_TTL_SECONDS });
-  await sms.send(e164, `Yula kod: ${code}`);
+  await sms.send(e164, `Abadan kod: ${code}`);
   return { sentAt: Date.now(), provider: 'manual' };
 }
 
