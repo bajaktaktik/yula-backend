@@ -7,6 +7,7 @@ const pool = require('../db/pool');
 const { requireAuth } = require('../auth/middleware');
 const graph = require('../services/graph');
 const push = require('../services/push');
+const messageCrypto = require('../services/messageCrypto');
 
 const router = express.Router();
 
@@ -38,6 +39,8 @@ router.get('/', requireAuth, async (req, res, next) => {
     );
     const result = rows.map((r) => ({
       ...r,
+      // At-rest şifrelenmiş son mesajı çöz (eski plaintext mesajlar olduğu gibi gelir)
+      last_message: messageCrypto.decrypt(r.last_message),
       listing_photos: r.listing_cover ? [r.listing_cover] : [],
     }));
     res.json({ conversations: result, count: result.length });
@@ -142,7 +145,8 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
       ? { ...listing.rows[0], photos: listing.rows[0].cover_photo ? [listing.rows[0].cover_photo] : [] }
       : null;
     res.json({
-      messages: rows,
+      // At-rest şifrelemeyi çöz — eski plaintext mesajlar etkilenmez
+      messages: messageCrypto.decryptRows(rows, 'content'),
       conversation: { id: c.id, buyer_id: c.buyer_id, seller_id: c.seller_id },
       other: otherInfo.rows[0] || null,
       listing: listingData,
@@ -172,10 +176,12 @@ router.post('/:id/messages', requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: 'forbidden' });
     }
 
+    // At-rest şifreleme: DB'ye şifreli yaz, response'ta düz metin dön
+    const ciphertext = messageCrypto.encrypt(value.content);
     const ins = await pool.query(
       `INSERT INTO messages (conversation_id, sender_id, content)
        VALUES ($1, $2, $3) RETURNING id, sent_at`,
-      [req.params.id, req.userId, value.content]
+      [req.params.id, req.userId, ciphertext]
     );
     await pool.query('UPDATE conversations SET last_message_at = now() WHERE id = $1', [req.params.id]);
 

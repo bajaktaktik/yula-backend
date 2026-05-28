@@ -2,6 +2,7 @@
 const { verifyAccess } = require('../auth/jwt');
 const pool = require('../db/pool');
 const graph = require('../services/graph');
+const messageCrypto = require('../services/messageCrypto');
 
 function setupChat(io) {
   io.use((socket, next) => {
@@ -36,10 +37,12 @@ function setupChat(io) {
         const other = conv.buyer_id === socket.userId ? conv.seller_id : conv.buyer_id;
         if (!visible.has(other)) return cb?.({ error: 'not_in_network' });
 
+        // At-rest şifreleme — DB'ye şifreli yaz, soket event'i düz metinle yayar
+        const ciphertext = messageCrypto.encrypt(content);
         const ins = await pool.query(
           `INSERT INTO messages (conversation_id, sender_id, content) VALUES ($1, $2, $3)
            RETURNING id, sent_at`,
-          [conversationId, socket.userId, content]
+          [conversationId, socket.userId, ciphertext]
         );
         await pool.query(
           'UPDATE conversations SET last_message_at = now() WHERE id = $1',
