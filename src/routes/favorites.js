@@ -1,6 +1,5 @@
 // Favori ilanlar ve gizlenen ilanlar.
-// Mahremiyet: 2. derece bağlantılarda aracı (1. derece) kişinin bilgisi
-// asla istemciye gönderilmez; sadece degree bilgisi döner.
+// Sadece rehberindeki (1. derece) kullanıcıların ilanları görünür.
 
 const express = require('express');
 const pool = require('../db/pool');

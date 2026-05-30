@@ -18,6 +18,7 @@ function fakeHash(seed) {
 }
 
 // 8 sahte kullanıcı (rehberine eklenecek = 1. derece)
+// 2. derece (tanıdığın tanıdığı) tamamen kaldırıldı — sadece rehberindeki kişiler görünür.
 const USERS_1 = [
   { seed: 'ayse',    name: 'Ayşe Yılmaz',    avatar: 'https://i.pravatar.cc/200?img=47' },
   { seed: 'mehmet',  name: 'Mehmet Demir',   avatar: 'https://i.pravatar.cc/200?img=12' },
@@ -25,10 +26,6 @@ const USERS_1 = [
   { seed: 'emre',    name: 'Emre Çelik',     avatar: 'https://i.pravatar.cc/200?img=33' },
   { seed: 'elif',    name: 'Elif Şahin',     avatar: 'https://i.pravatar.cc/200?img=48' },
   { seed: 'burak',   name: 'Burak Öztürk',   avatar: 'https://i.pravatar.cc/200?img=14' },
-];
-
-// 2 kullanıcı 2. derece (Ayşe'nin rehberinde olacak, senin rehberinde değil)
-const USERS_2 = [
   { seed: 'selin',   name: 'Selin Arslan',   avatar: 'https://i.pravatar.cc/200?img=49' },
   { seed: 'kerem',   name: 'Kerem Yıldız',   avatar: 'https://i.pravatar.cc/200?img=15' },
 ];
@@ -111,7 +108,7 @@ const LISTINGS = [
     price: 2200, category: 'ayakkabi', city: 'İstanbul', district: 'Beyoğlu',
     photos: ['https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800&q=80'],
   },
-  // 2. derece - Selin (Ayşe'nin rehberinde)
+  // Selin
   {
     user: 'selin',
     title: 'Bose QuietComfort 45 Kulaklık',
@@ -119,7 +116,7 @@ const LISTINGS = [
     price: 6800, category: 'tv-ses-sistemi', city: 'İstanbul', district: 'Üsküdar',
     photos: ['https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=800&q=80'],
   },
-  // 2. derece - Kerem (Mehmet'in rehberinde)
+  // Kerem
   {
     user: 'kerem',
     title: 'Yamaha P-45 Dijital Piyano + Standı',
@@ -185,29 +182,17 @@ async function main() {
   const myId = me.rows[0].id;
   console.log(`✓ Kullanıcı bulundu: ${me.rows[0].display_name || '(isim yok)'} — ${myId}`);
 
-  // 1. derece kullanıcıları oluştur ve rehberine ekle
+  // Tüm kullanıcıları oluştur ve rehberine ekle (hepsi 1. derece)
   const created1 = {};
   for (const u of USERS_1) {
     const { id, phone_hash } = await upsertUser(u);
     created1[u.seed] = { id, phone_hash, name: u.name };
     await addContact(myId, phone_hash, u.name);
   }
-  console.log(`✓ ${USERS_1.length} kişi rehberine eklendi (1. derece)`);
-
-  // 2. derece kullanıcıları oluştur (senin rehberinde değil; ama Ayşe/Mehmet'in rehberinde)
-  const created2 = {};
-  for (const u of USERS_2) {
-    const { id, phone_hash } = await upsertUser(u);
-    created2[u.seed] = { id, phone_hash, name: u.name };
-  }
-  // Selin → Ayşe'nin rehberinde
-  await addContact(created1.ayse.id, created2.selin.phone_hash, created2.selin.name);
-  // Kerem → Mehmet'in rehberinde
-  await addContact(created1.mehmet.id, created2.kerem.phone_hash, created2.kerem.name);
-  console.log(`✓ ${USERS_2.length} kişi 2. derece bağlantı olarak ayarlandı`);
+  console.log(`✓ ${USERS_1.length} kişi rehberine eklendi`);
 
   // İlanları oluştur
-  const allUsers = { ...created1, ...created2 };
+  const allUsers = created1;
   let count = 0;
   for (const l of LISTINGS) {
     const u = allUsers[l.user];

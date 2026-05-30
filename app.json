@@ -1,3 +1,12 @@
 {
-  "expo": {}
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "4c582d5c-cba5-4b12-ae27-f385ba47e0b8"
+      }
+    },
+    "android": {
+      "package": "com.bajak.abadanbackend"
+    }
+  }
 }
