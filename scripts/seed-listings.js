@@ -139,10 +139,12 @@ async function upsertUser(u) {
 }
 
 async function addContact(ownerId, contactHash, contactName) {
+  // [DEMO] prefix — mobile rehber sync'i bu kontaktları silmez (bkz: routes/contacts.js).
   await pool.query(
     `INSERT INTO user_contacts (user_id, contact_phone_hash, contact_name)
-     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-    [ownerId, contactHash, contactName]
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, contact_phone_hash) DO UPDATE SET contact_name = EXCLUDED.contact_name`,
+    [ownerId, contactHash, '[DEMO] ' + contactName]
   );
 }
 

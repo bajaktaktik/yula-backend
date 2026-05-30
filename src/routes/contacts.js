@@ -26,7 +26,14 @@ router.post('/sync', requireAuth, async (req, res, next) => {
 
     await client.query('BEGIN');
     if (value.replace) {
-      await client.query('DELETE FROM user_contacts WHERE user_id = $1', [req.userId]);
+      // [DEMO] prefix'li kontaklar (seed-listings ile eklenmiş demo verileri) korunur.
+      // Bu sayede mobil sync ekran görüntüsü için yüklenen test ilanlarını silmez.
+      await client.query(
+        `DELETE FROM user_contacts
+         WHERE user_id = $1
+           AND (contact_name IS NULL OR contact_name NOT LIKE '[DEMO]%')`,
+        [req.userId]
+      );
     }
 
     // Toplu insert
