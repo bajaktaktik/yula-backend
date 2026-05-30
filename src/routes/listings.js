@@ -157,7 +157,8 @@ router.get('/', requireAuth, async (req, res, next) => {
              l.location_city, l.location_district, l.created_at,
              l.category_id, c.name AS category_name, c.slug AS category_slug,
              l.user_id,
-             COALESCE(uc.contact_name, u.display_name) AS seller_name,
+             -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
+             REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
              -- Liste için sadece vitrin (ilk) fotoğrafı — base64'lerle response şişmesin
              -- Thumbnail (varsa) yoksa eski full url'e fallback
@@ -235,7 +236,8 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
              l.location_city, l.location_district, l.created_at,
              l.category_id, c.name AS category_name,
              l.user_id,
-             COALESCE(uc.contact_name, u.display_name) AS seller_name,
+             -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
+             REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
@@ -277,7 +279,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     const myGender = await getMyGender(req.userId);
     const { rows } = await pool.query(
       `SELECT l.*,
-              COALESCE(uc.contact_name, u.display_name) AS seller_name,
+              -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
+             REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
               u.avatar_url AS seller_avatar,
               c.name AS category_name,
               c.slug AS category_slug,

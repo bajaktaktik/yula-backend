@@ -23,7 +23,8 @@ router.get('/', requireAuth, async (req, res, next) => {
       `SELECT l.id, l.title, l.description, l.price, l.currency,
               l.location_city, l.location_district, l.created_at, l.user_id,
               l.status, l.is_negotiable,
-              COALESCE(uc.contact_name, u.display_name) AS seller_name,
+              -- [DEMO] prefix'i (seed-listings.js) UI'da gözükmesin diye soyuluyor.
+              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
               u.avatar_url AS seller_avatar,
               (SELECT p.url FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
               (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
