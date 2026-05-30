@@ -99,6 +99,46 @@ router.delete('/me/push-token', requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /users/me/connections →
+// Kullanıcının rehberindeki Abadan kullanıcılarının listesi.
+// Her kullanıcı için: id, isim (rehberde kayıtlı isim öncelikli), avatar, aktif ilan sayısı.
+// Ana sayfa "X kişi" rozetine tıklandığında açılan ekran için.
+router.get('/me/connections', requireAuth, async (req, res, next) => {
+  try {
+    // Kendi cinsiyetim — gender-restricted ilan sayımını filtrelemek için
+    const me = await pool.query('SELECT gender FROM users WHERE id = $1', [req.userId]);
+    const myGender = me.rows[0]?.gender || null;
+    const genderCond = (myGender === 'female' || myGender === 'male')
+      ? `(l.restricted_to_gender IS NULL OR l.restricted_to_gender = '${myGender}')`
+      : `(l.restricted_to_gender IS NULL)`;
+
+    const { rows } = await pool.query(
+      `SELECT u.id, u.avatar_url,
+              -- Rehberdeki isim öncelikli, yoksa kullanıcının kendi display_name'i.
+              -- [DEMO] prefix'i (seed-listings) UI'da gözükmesin diye soyuluyor.
+              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS name,
+              (
+                SELECT COUNT(*)::int FROM listings l
+                WHERE l.user_id = u.id
+                  AND l.status = 'active'
+                  AND ${genderCond}
+                  AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $1)
+              ) AS listing_count
+       FROM user_contacts uc
+       JOIN users u ON u.phone_hash = uc.contact_phone_hash
+       WHERE uc.user_id = $1
+         AND u.id <> $1
+         AND u.status = 'active'
+       ORDER BY listing_count DESC, name ASC`,
+      [req.userId]
+    );
+
+    res.json({ connections: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /users/me/network-size →
 // Kullanıcının rehberindeki numaralardan kaç tanesi Abadan'a kayıtlı.
 // (Kendisi hariç.) Ana sayfa header'ında "Abadan · 23 kişi" göstermek için.
