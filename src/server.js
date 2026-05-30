@@ -20,6 +20,10 @@ const genderChangeRoutes = require('./routes/gender-change');
 const { setupChat } = require('./sockets/chat');
 
 const app = express();
+// Railway / Netlify gibi reverse-proxy arkasında çalışıyoruz.
+// trust proxy = 1 → X-Forwarded-For header'ı tek hop için güvenilir kabul edilir.
+// Bu olmadan express-rate-limit ValidationError atıyor.
+app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors());
 // Fotoğraf base64 data URL'leri büyük olabilir → limit yüksek
