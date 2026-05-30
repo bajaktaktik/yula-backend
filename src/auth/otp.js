@@ -13,11 +13,30 @@ const OTP_TTL_SECONDS = 600; // 10 dakika
 const OTP_LENGTH = 6;
 const MAX_ATTEMPTS = 5;
 
+// ---- App Store/Google Play reviewer bypass ----
+// Mağaza inceleyicisi (App Store / Play Store reviewer) gerçek SMS alamaz.
+// Bu sabit numaralar için SMS gönderilmez ve OTP olarak "REVIEWER_OTP_CODE" sabit kabul edilir.
+// Mağaza submission metadata'da bu numara + kod reviewer'a verilir.
+// PRODUCTION'DA BU NUMARAYI KIMSEYE PAYLASMA.
+const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const REVIEWER_OTP_CODE = process.env.REVIEWER_OTP_CODE || '424242';
+
+function isReviewerPhone(e164) {
+  return REVIEWER_PHONES.includes(e164);
+}
+
 function generateOtp() {
   return crypto.randomInt(0, 1_000_000).toString().padStart(OTP_LENGTH, '0');
 }
 
 async function requestOtp(e164) {
+  // Reviewer numarası — SMS gönderme, sessizce başarılı dön
+  if (isReviewerPhone(e164)) {
+    return { sentAt: Date.now(), provider: 'reviewer-bypass' };
+  }
   // Önce Verify'a bak
   if (verify.isEnabled()) {
     await verify.startVerification(e164);
@@ -32,6 +51,11 @@ async function requestOtp(e164) {
 }
 
 async function verifyOtp(e164, code) {
+  // Reviewer numarası — sadece sabit kodu kabul et
+  if (isReviewerPhone(e164)) {
+    if (String(code) === REVIEWER_OTP_CODE) return { ok: true };
+    return { ok: false, reason: 'invalid' };
+  }
   // Verify enabled ise Twilio'ya sor
   if (verify.isEnabled()) {
     const result = await verify.checkVerification(e164, code);
