@@ -1,11 +1,15 @@
 // Rehber tabanlı görünürlük: SADECE 1. derece — kullanıcının kendi telefon
 // rehberinde olan ve Abadan'a kayıtlı kişiler.
 // 2. derece (tanıdığın tanıdığı) MAHREMİYET nedeniyle kaldırıldı.
+//
+// NOT: Eski sürümde Redis cache (24 saat TTL) vardı. Sorun: rehber yenilenince,
+// kullanıcı kayıt olunca, ilan eklenince cache stale kalıyordu ve invalidate
+// her noktada tetiklenemiyordu. Sonuç: yeni içerikler görünmüyordu.
+// Şimdi her çağrıda DB'den taze veri okunur. Sorgu hızlıdır (<50ms typical).
+// Cache ileride gerçekten lazım olursa graphdb-style sayfalama ile gelir.
 
 const pool = require('../db/pool');
 const redis = require('../cache/redis');
-
-const CACHE_TTL_SECONDS = 24 * 60 * 60; // 24 saat
 
 /**
  * Kullanıcının görebileceği diğer kullanıcı id'lerini döner.
@@ -13,12 +17,6 @@ const CACHE_TTL_SECONDS = 24 * 60 * 60; // 24 saat
  * Geri dönüş: Map<user_id, 1>  (degree daima 1; alan UI uyumluluğu için)
  */
 async function getVisibleUserIds(userId) {
-  const cacheKey = `connections:${userId}`;
-  const cached = await redis.get(cacheKey);
-  if (cached) {
-    return new Map(JSON.parse(cached));
-  }
-
   const { rows } = await pool.query(
     `SELECT u.id::text AS id
      FROM user_contacts uc
@@ -38,13 +36,17 @@ async function getVisibleUserIds(userId) {
   for (const r of rows) {
     if (!blockedSet.has(r.id)) map.set(r.id, 1);
   }
-
-  await redis.set(cacheKey, JSON.stringify([...map.entries()]), { EX: CACHE_TTL_SECONDS });
   return map;
 }
 
+// Backwards-compat: eski kodda contacts.js graph.invalidate çağırıyor.
+// Cache yok artık ama signature'ı koruyalım — no-op + eski cache key'i de temizle.
 async function invalidate(userId) {
-  await redis.del(`connections:${userId}`);
+  try {
+    await redis.del(`connections:${userId}`);
+  } catch (_) {
+    // Redis yoksa veya bağlantı sorunu — sessizce geç, kritik değil
+  }
 }
 
 module.exports = { getVisibleUserIds, invalidate };
