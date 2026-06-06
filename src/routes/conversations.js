@@ -33,7 +33,11 @@ router.get('/', requireAuth, async (req, res, next) => {
        JOIN listings l ON l.id = c.listing_id
        JOIN users other_u ON other_u.id = (CASE WHEN c.buyer_id = $1 THEN c.seller_id ELSE c.buyer_id END)
        LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = other_u.phone_hash
-       WHERE c.buyer_id = $1 OR c.seller_id = $1
+       WHERE (c.buyer_id = $1 OR c.seller_id = $1)
+         -- Sadece en az 1 mesajı olan sohbetler. Boş (timeout sonrası yarı kalmış) sohbetler
+         -- gizlenir. Kullanıcı aynı ilana tekrar girip Mesaj'a basarsa POST /conversations
+         -- idempotent olduğu için aynı boş sohbet kullanılır, ilk mesaj atılınca görünür olur.
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
        ORDER BY c.last_message_at DESC`,
       [req.userId]
     );

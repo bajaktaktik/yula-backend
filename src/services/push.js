@@ -18,6 +18,21 @@ async function sendToUser(userId, payload) {
   );
   if (rows.length === 0) return;
 
+  // Badge sayısı: kullanıcının toplam okunmamış mesaj sayısı (iOS ikon üzerinde gözükür).
+  // payload.badge override edilebilir; verilmediyse otomatik hesaplanır.
+  let badge = payload.badge;
+  if (badge === undefined) {
+    const unread = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE (c.buyer_id = $1 OR c.seller_id = $1)
+         AND m.sender_id <> $1
+         AND m.read_at IS NULL`,
+      [userId]
+    );
+    badge = unread.rows[0]?.n || 0;
+  }
+
   const messages = [];
   const invalidTokens = [];
 
@@ -34,6 +49,7 @@ async function sendToUser(userId, payload) {
       data: payload.data || {},
       priority: 'high',
       channelId: 'messages',
+      badge, // iOS app icon badge sayısı
     });
   }
 
