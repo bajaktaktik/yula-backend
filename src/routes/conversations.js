@@ -63,7 +63,7 @@ router.post('/', requireAuth, async (req, res, next) => {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
-    // İlanı bul, satıcısını öğren
+    // 1. Listing fetch — bunu beklemek zorundayız (satıcı id'sini öğreniyoruz)
     const lres = await pool.query('SELECT id, user_id FROM listings WHERE id = $1', [value.listingId]);
     if (lres.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
     const listing = lres.rows[0];
@@ -71,21 +71,40 @@ router.post('/', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'cannot_message_own_listing' });
     }
 
-    // Network kontrolü (sadece tanıdıklar mesajlaşabilir)
-    const visible = await graph.getVisibleUserIds(req.userId);
-    if (!visible.has(listing.user_id)) {
+    // 2. PARALEL: network kontrolü (single-row, hızlı) + existing conversation kontrolü
+    //    Eski hâlde graph.getVisibleUserIds tüm rehber listesini çekiyordu — şimdi sadece
+    //    "bu satıcı görünür mü" tek sorguya indirildi (indeksle <10ms).
+    const [visibleRes, existingRes, blockedRes] = await Promise.all([
+      pool.query(
+        `SELECT 1 FROM user_contacts uc
+         JOIN users u ON u.phone_hash = uc.contact_phone_hash
+         WHERE uc.user_id = $1 AND u.id = $2 AND u.status = 'active'
+         LIMIT 1`,
+        [req.userId, listing.user_id]
+      ),
+      pool.query(
+        'SELECT id FROM conversations WHERE listing_id = $1 AND buyer_id = $2 LIMIT 1',
+        [value.listingId, req.userId]
+      ),
+      pool.query(
+        `SELECT 1 FROM blocks
+         WHERE (blocker_id = $1 AND blocked_id = $2)
+            OR (blocker_id = $2 AND blocked_id = $1)
+         LIMIT 1`,
+        [req.userId, listing.user_id]
+      ),
+    ]);
+
+    if (visibleRes.rows.length === 0 || blockedRes.rows.length > 0) {
       return res.status(403).json({ error: 'not_in_your_network' });
     }
 
-    // Mevcut sohbet varsa onu döndür, yoksa yeni oluştur
-    const existing = await pool.query(
-      'SELECT id FROM conversations WHERE listing_id = $1 AND buyer_id = $2',
-      [value.listingId, req.userId]
-    );
-    if (existing.rows.length > 0) {
-      return res.json({ conversation: { id: existing.rows[0].id, listing_id: value.listingId } });
+    // Mevcut sohbet varsa onu döndür (idempotent)
+    if (existingRes.rows.length > 0) {
+      return res.json({ conversation: { id: existingRes.rows[0].id, listing_id: value.listingId } });
     }
 
+    // 3. Yeni sohbet
     const ins = await pool.query(
       `INSERT INTO conversations (listing_id, buyer_id, seller_id)
        VALUES ($1, $2, $3) RETURNING id`,

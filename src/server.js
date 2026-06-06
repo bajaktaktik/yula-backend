@@ -3,6 +3,7 @@ const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { Server: SocketServer } = require('socket.io');
 const config = require('./config');
@@ -25,6 +26,8 @@ const app = express();
 // Bu olmadan express-rate-limit ValidationError atıyor.
 app.set('trust proxy', 1);
 app.use(helmet());
+// gzip / deflate sıkıştırma — büyük JSON response'lar (özellikle base64 foto'lar) 3-5x küçülür
+app.use(compression());
 app.use(cors());
 // Fotoğraf base64 data URL'leri büyük olabilir → limit yüksek
 app.use(express.json({ limit: '25mb' }));

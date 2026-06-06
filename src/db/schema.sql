@@ -102,6 +102,16 @@ CREATE TABLE IF NOT EXISTS messages (
   read_at         TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, sent_at);
+-- Performans indeksleri (Haziran 2026): yavaşlık optimizasyonu
+-- POST /conversations: visible check + existing conversation lookup için
+CREATE INDEX IF NOT EXISTS idx_user_contacts_user ON user_contacts(user_id);
+CREATE INDEX IF NOT EXISTS idx_conv_listing_buyer ON conversations(listing_id, buyer_id);
+-- Block kontrolü için (iki yöne ayrı indeks)
+CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON blocks(blocker_id);
+CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id);
+-- Unread mesaj sayımı (push badge için)
+CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(conversation_id, sender_id, read_at)
+  WHERE read_at IS NULL;
 
 -- Favoriler
 CREATE TABLE IF NOT EXISTS favorites (
