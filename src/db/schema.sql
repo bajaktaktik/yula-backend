@@ -21,6 +21,9 @@ CREATE INDEX IF NOT EXISTS idx_users_phone_hash ON users(phone_hash);
 -- Yeni kayıt sonrası kullanıcı OnboardingScreen'i bir kez görür (atlasa bile set edilir),
 -- sonraki açılışlarda direkt Tabs'a gider.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
+-- Mevcut kullanıcılar zaten onboarding'ten geçmiş; created_at'i kullan
+-- (Sadece NULL olanlar — yeni kayıtları etkilemez, idempotent.)
+UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL;
 -- Migration: mevcut tablolara kolon ekle
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS location_city TEXT;
