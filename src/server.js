@@ -63,6 +63,22 @@ const server = http.createServer(app);
 const io = new SocketServer(server, { cors: { origin: '*' } });
 setupChat(io);
 
-server.listen(config.port, () => {
-  console.log(`Abadan API ${config.port} portunda dinliyor (${config.env})`);
-});
+// Başlangıçta schema migration otomatik çalışır (idempotent — IF NOT EXISTS).
+// Yeni column/index ekleyince ayrıca `npm run migrate` çalıştırmaya gerek yok.
+(async () => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const pool = require('./db/pool');
+    const sql = fs.readFileSync(path.join(__dirname, 'db', 'schema.sql'), 'utf8');
+    await pool.query(sql);
+    console.log('[migrate] Şema güncel.');
+  } catch (e) {
+    console.error('[migrate] Şema migration hatası:', e.message);
+    // Migrate hatası fatal değil — server yine başlasın (eski schema ile çalışır)
+  }
+
+  server.listen(config.port, () => {
+    console.log(`Abadan API ${config.port} portunda dinliyor (${config.env})`);
+  });
+})();
