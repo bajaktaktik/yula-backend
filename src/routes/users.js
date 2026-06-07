@@ -8,7 +8,7 @@ const router = express.Router();
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, display_name, avatar_url, bio, gender, location_city, created_at FROM users WHERE id = $1',
+      'SELECT id, display_name, avatar_url, bio, gender, location_city, created_at, onboarded_at FROM users WHERE id = $1',
       [req.userId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'not_found' });
@@ -24,6 +24,8 @@ const updateSchema = Joi.object({
   bio: Joi.string().max(300).allow(''),
   gender: Joi.string().valid('female', 'male').allow(null),
   locationCity: Joi.string().max(80).allow(''),
+  // Onboarding tamamlandı işareti — cinsiyet seçimi opsiyonel olduğu için ayrı.
+  onboarded: Joi.boolean(),
 });
 
 router.patch('/me', requireAuth, async (req, res, next) => {
@@ -51,10 +53,11 @@ router.patch('/me', requireAuth, async (req, res, next) => {
     if (value.bio !== undefined)          { params.push(value.bio);          sets.push(`bio = $${params.length}`); }
     if (value.gender !== undefined)       { params.push(value.gender);       sets.push(`gender = $${params.length}`); }
     if (value.locationCity !== undefined) { params.push(value.locationCity || null); sets.push(`location_city = $${params.length}`); }
+    if (value.onboarded === true) { sets.push(`onboarded_at = COALESCE(onboarded_at, now())`); }
     if (sets.length === 0) return res.status(400).json({ error: 'no_fields' });
     params.push(req.userId);
     const { rows } = await pool.query(
-      `UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING id, display_name, avatar_url, bio, gender, location_city`,
+      `UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING id, display_name, avatar_url, bio, gender, location_city, onboarded_at`,
       params
     );
     res.json({ user: rows[0] });

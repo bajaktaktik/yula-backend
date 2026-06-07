@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS users (
   last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_users_phone_hash ON users(phone_hash);
+-- Onboarding tamamlandı işareti (cinsiyet opsiyonel — Apple 5.1.1 uyumu için).
+-- Yeni kayıt sonrası kullanıcı OnboardingScreen'i bir kez görür (atlasa bile set edilir),
+-- sonraki açılışlarda direkt Tabs'a gider.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ;
 -- Migration: mevcut tablolara kolon ekle
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS location_city TEXT;
