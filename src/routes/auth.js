@@ -5,6 +5,10 @@ const pool = require('../db/pool');
 const { normalizePhone, rehashClientHash } = require('../utils/phone');
 const { requestOtp, verifyOtp } = require('../auth/otp');
 const { signAccess, signRefresh, verifyRefresh } = require('../auth/jwt');
+const { ensureReviewerSeed } = require('../services/reviewer-seed');
+
+const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 const router = express.Router();
 
@@ -153,6 +157,13 @@ router.post('/verify-otp', async (req, res, next) => {
       [phoneHash, value.displayName || null]
     );
     const user = upsert.rows[0];
+
+    // App Store / Play Store reviewer ise demo content seed et (idempotent, fire-and-forget).
+    // Reviewer login olduğunda ana sayfa dolu görür → "boş uygulama" reject riski biter.
+    if (REVIEWER_PHONES.includes(e164)) {
+      // await etmeden çalıştır — login response'unu beklemesin
+      ensureReviewerSeed(user.id).catch((e) => console.error('[reviewer-seed]', e.message));
+    }
 
     res.json({
       user,
