@@ -217,8 +217,8 @@ router.get('/mine', requireAuth, async (req, res, next) => {
   }
 });
 
-// GET /listings/garage-sale  →  son 48 saatte verilen ilanlar (network filtreli)
-// "Garaj Satış" sekmesi için reels-style görüntüleme akışı.
+// GET /listings/garage-sale  →  Vitrin sekmesi: son N gün ilanları (default 30 gün, max 30 gün)
+// Reels-style görüntüleme akışı. Daha geniş pencere → boş ekran azalır.
 router.get('/garage-sale', requireAuth, async (req, res, next) => {
   try {
     const visible = await graph.getVisibleUserIds(req.userId);
@@ -226,7 +226,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       return res.json({ listings: [], message: 'Henüz tanıdığın yok. Önce rehberini senkronize et.' });
     }
     const ids = [...visible.keys()];
-    const hours = Math.min(parseInt(req.query.hours || '48', 10), 168); // max 7 gün
+    const hours = Math.min(parseInt(req.query.hours || '720', 10), 720); // default + max 30 gün
     const myGender = await getMyGender(req.userId);
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
