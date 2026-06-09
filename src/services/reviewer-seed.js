@@ -71,32 +71,44 @@ async function ensureReviewerSeed(reviewerUserId) {
       );
     }
 
-    // 3) İlanlar — yoksa yarat
-    for (const l of LISTINGS) {
+    // 3) İlanlar — yoksa yarat, varsa created_at'i tazele (Vitrin son 7 günü gösterir)
+    for (let i = 0; i < LISTINGS.length; i++) {
+      const l = LISTINGS[i];
       const fake = userIds[l.user];
       if (!fake) continue;
 
-      // Aynı title varsa skip
+      // Random olarak son 6 gün içine dağıt — Vitrin sürekli dolu görünür
+      const randomDaysAgo = (i % 6); // 0-5 gün
+      const createdAt = `now() - interval '${randomDaysAgo} days' - interval '${i * 3} hours'`;
+
       const existing = await pool.query(
         'SELECT id FROM listings WHERE user_id = $1 AND title = $2 LIMIT 1',
         [fake.id, l.title]
       );
-      if (existing.rows.length > 0) continue;
+
+      if (existing.rows.length > 0) {
+        // Var → created_at'i tazele (Vitrin'de görünmeye devam etsin)
+        await pool.query(
+          `UPDATE listings SET created_at = ${createdAt} WHERE id = $1`,
+          [existing.rows[0].id]
+        );
+        continue;
+      }
 
       const cat = await pool.query('SELECT id FROM categories WHERE slug = $1', [l.category]);
       const categoryId = cat.rows[0]?.id || null;
 
       const lr = await pool.query(
-        `INSERT INTO listings (user_id, title, description, category_id, price, location_city, location_district)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        `INSERT INTO listings (user_id, title, description, category_id, price, location_city, location_district, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, ${createdAt}) RETURNING id`,
         [fake.id, l.title, l.description, categoryId, l.price, l.city, l.district]
       );
       const listingId = lr.rows[0].id;
 
-      for (let i = 0; i < l.photos.length; i++) {
+      for (let j = 0; j < l.photos.length; j++) {
         await pool.query(
           'INSERT INTO listing_photos (listing_id, url, ordering) VALUES ($1, $2, $3)',
-          [listingId, l.photos[i], i]
+          [listingId, l.photos[j], j]
         );
       }
     }
