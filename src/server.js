@@ -25,6 +25,10 @@ const app = express();
 // trust proxy = 1 → X-Forwarded-For header'ı tek hop için güvenilir kabul edilir.
 // Bu olmadan express-rate-limit ValidationError atıyor.
 app.set('trust proxy', 1);
+// ETag header'ı kapat. iOS URLCache If-None-Match yolluyor, backend 304 dönüyor,
+// axios default validateStatus 304'ü hata sayıyor → mobile spinner takılıyor.
+// Tutarlı 200 + body için etag'i devre dışı bırak (bandwidth küçük, UX kritik).
+app.set('etag', false);
 app.use(helmet());
 // NOT: compression() middleware geçici olarak devre dışı.
 // React Native axios bazı build'lerde gzip response'larda timeout/reject yaşıyor.
