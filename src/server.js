@@ -26,8 +26,10 @@ const app = express();
 // Bu olmadan express-rate-limit ValidationError atıyor.
 app.set('trust proxy', 1);
 app.use(helmet());
-// gzip / deflate sıkıştırma — büyük JSON response'lar (özellikle base64 foto'lar) 3-5x küçülür
-app.use(compression());
+// NOT: compression() middleware geçici olarak devre dışı.
+// React Native axios bazı build'lerde gzip response'larda timeout/reject yaşıyor.
+// /healthz küçük olduğu için sorunsuz, ama büyük response'lar (listings) mobile'da fail.
+// app.use(compression());
 app.use(cors());
 // Fotoğraf base64 data URL'leri büyük olabilir → limit yüksek
 app.use(express.json({ limit: '25mb' }));
