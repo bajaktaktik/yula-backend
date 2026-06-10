@@ -191,12 +191,12 @@ router.post('/change-pin', requireAuth, async (req, res, next) => {
     if (value.oldPin === value.newPin) {
       return res.status(400).json({ error: 'same_pin', message: 'Yeni PIN eski PIN ile aynı olamaz.' });
     }
-    const q = await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id]);
+    const q = await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.userId]);
     if (q.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
     const ok = await bcrypt.compare(value.oldPin, q.rows[0].pin_hash);
     if (!ok) return res.status(401).json({ error: 'wrong_pin', message: 'Eski PIN hatalı.' });
     const newHash = await bcrypt.hash(value.newPin, 10);
-    await pool.query('UPDATE users SET pin_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+    await pool.query('UPDATE users SET pin_hash = $1 WHERE id = $2', [newHash, req.userId]);
     res.json({ ok: true });
   } catch (err) {
     next(err);
