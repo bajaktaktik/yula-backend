@@ -6,6 +6,7 @@ const { normalizePhone, rehashClientHash } = require('../utils/phone');
 const { requestOtp, verifyOtp } = require('../auth/otp');
 const { signAccess, signRefresh, verifyRefresh } = require('../auth/jwt');
 const { ensureReviewerSeed } = require('../services/reviewer-seed');
+const { requireAuth } = require('../auth/middleware');
 
 const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
   .split(',').map((s) => s.trim()).filter(Boolean);
@@ -172,6 +173,65 @@ router.post('/verify-otp', async (req, res, next) => {
         refresh: signRefresh(user.id),
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ──── PIN değiştirme (auth gerekli, eski PIN doğrulanır) ────
+const changePinSchema = Joi.object({
+  oldPin: Joi.string().pattern(/^\d{4,8}$/).required(),
+  newPin: Joi.string().pattern(/^\d{4,8}$/).required(),
+});
+
+router.post('/change-pin', requireAuth, async (req, res, next) => {
+  try {
+    const { value, error } = changePinSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+    if (value.oldPin === value.newPin) {
+      return res.status(400).json({ error: 'same_pin', message: 'Yeni PIN eski PIN ile aynı olamaz.' });
+    }
+    const q = await pool.query('SELECT pin_hash FROM users WHERE id = $1', [req.user.id]);
+    if (q.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
+    const ok = await bcrypt.compare(value.oldPin, q.rows[0].pin_hash);
+    if (!ok) return res.status(401).json({ error: 'wrong_pin', message: 'Eski PIN hatalı.' });
+    const newHash = await bcrypt.hash(value.newPin, 10);
+    await pool.query('UPDATE users SET pin_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ──── PIN sıfırlama (SMS OTP ile, auth gerekmez) ────
+// Akış: client önce /auth/request-otp ile kod ister; sonra bu endpoint'e
+// telefon + kod + yeni PIN yollar. Kod doğruysa yeni PIN kaydedilir.
+const resetPinSchema = Joi.object({
+  phone: Joi.string().required(),
+  phoneSha256: Joi.string().length(64).required(),
+  code: Joi.string().length(6).required(),
+  newPin: Joi.string().pattern(/^\d{4,8}$/).required(),
+});
+
+router.post('/reset-pin', async (req, res, next) => {
+  try {
+    const { value, error } = resetPinSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const e164 = normalizePhone(value.phone);
+    if (!e164) return res.status(400).json({ error: 'invalid_phone' });
+
+    // SMS doğrulaması — kod yanlışsa sıfırlama YOK
+    const v = await verifyOtp(e164, value.code);
+    if (!v.ok) return res.status(401).json({ error: 'otp_' + v.reason });
+
+    const phoneHash = rehashClientHash(value.phoneSha256);
+    const q = await pool.query('SELECT id FROM users WHERE phone_hash = $1', [phoneHash]);
+    if (q.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'Bu numaraya kayıtlı hesap yok.' });
+
+    const newHash = await bcrypt.hash(value.newPin, 10);
+    await pool.query('UPDATE users SET pin_hash = $1, last_active_at = now() WHERE id = $2', [newHash, q.rows[0].id]);
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
