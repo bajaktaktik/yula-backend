@@ -12,7 +12,8 @@ const expo = new Expo();
  * @param {object} payload - { title, body, data }
  */
 async function sendToUser(userId, payload) {
-  console.log(`[push] sendToUser ÇAĞRILDI user=${userId} title="${payload?.title}"`);
+  // PII korumalı log: title/body yazılmaz, sadece user_id + payload type
+  console.log(`[push] sendToUser user=${userId} type=${payload?.data?.type || 'generic'}`);
   const { rows } = await pool.query(
     'SELECT token FROM device_tokens WHERE user_id = $1',
     [userId]
