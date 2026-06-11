@@ -60,6 +60,8 @@ async function sendToUser(userId, payload) {
 
   if (messages.length === 0) return;
 
+  console.log(`[push] user=${userId} → ${messages.length} mesaj gönderiliyor`);
+
   const chunks = expo.chunkPushNotifications(messages);
   const tickets = [];
   for (const chunk of chunks) {
@@ -71,7 +73,19 @@ async function sendToUser(userId, payload) {
     }
   }
 
-  // Hata dönen ticket'lardaki DeviceNotRegistered tokenları temizle
+  // Ticket özeti
+  const okCount = tickets.filter((t) => t.status === 'ok').length;
+  const errCount = tickets.filter((t) => t.status === 'error').length;
+  console.log(`[push] ticket sonuç: ${okCount} ok, ${errCount} error`);
+
+  // Hatalı ticket detaylarını logla
+  tickets.forEach((t, i) => {
+    if (t.status === 'error') {
+      console.error(`[push] ticket error: ${t.message} | details:`, t.details, `| token: ${messages[i]?.to?.slice(0, 30)}...`);
+    }
+  });
+
+  // DeviceNotRegistered olanları DB'den temizle
   const badTokens = [];
   tickets.forEach((t, i) => {
     if (t.status === 'error' && t.details && t.details.error === 'DeviceNotRegistered') {
@@ -81,6 +95,30 @@ async function sendToUser(userId, payload) {
   if (badTokens.length > 0) {
     await pool.query('DELETE FROM device_tokens WHERE token = ANY($1)', [badTokens]);
     console.log(`[push] ${badTokens.length} geçersiz token temizlendi`);
+  }
+
+  // Receipt check — 15 sn sonra Expo'dan gerçek delivery durumunu sor.
+  // Ticket "ok" olabilir ama Expo→FCM iletim "InvalidCredentials" / "MismatchSenderId"
+  // gibi hatalarla fail olabilir. Receipt'lerde bu net görünür.
+  const ticketIds = tickets.filter((t) => t.status === 'ok' && t.id).map((t) => t.id);
+  if (ticketIds.length > 0) {
+    setTimeout(async () => {
+      try {
+        const receiptChunks = expo.chunkPushNotificationReceiptIds(ticketIds);
+        for (const chunk of receiptChunks) {
+          const receipts = await expo.getPushNotificationReceiptsAsync(chunk);
+          for (const [id, r] of Object.entries(receipts)) {
+            if (r.status === 'error') {
+              console.error(`[push] RECEIPT ERROR id=${id} message="${r.message}" details=`, r.details);
+            } else {
+              console.log(`[push] receipt ok id=${id}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[push] receipt fetch hatası:', err.message);
+      }
+    }, 15000);
   }
 }
 
