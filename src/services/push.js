@@ -12,11 +12,16 @@ const expo = new Expo();
  * @param {object} payload - { title, body, data }
  */
 async function sendToUser(userId, payload) {
+  console.log(`[push] sendToUser ÇAĞRILDI user=${userId} title="${payload?.title}"`);
   const { rows } = await pool.query(
     'SELECT token FROM device_tokens WHERE user_id = $1',
     [userId]
   );
-  if (rows.length === 0) return;
+  console.log(`[push] DB'den bulunan token sayısı: ${rows.length}`);
+  if (rows.length === 0) {
+    console.warn(`[push] TOKEN YOK — user=${userId} cihaz kaydetmemiş`);
+    return;
+  }
 
   // Badge sayısı: kullanıcının toplam okunmamış mesaj sayısı (iOS ikon üzerinde gözükür).
   // payload.badge override edilebilir; verilmediyse otomatik hesaplanır.
