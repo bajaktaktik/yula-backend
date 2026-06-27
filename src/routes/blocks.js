@@ -28,12 +28,24 @@ router.post('/', requireAuth, async (req, res, next) => {
     const u = await pool.query('SELECT id FROM users WHERE id = $1', [value.blockedId]);
     if (u.rows.length === 0) return res.status(404).json({ error: 'user_not_found' });
 
+    // Reason kolonu eski sürümlerde olmayabilir; defensive — önce başarılı INSERT
     await pool.query(
-      `INSERT INTO blocks (blocker_id, blocked_id, reason)
-       VALUES ($1, $2, $3)
+      `INSERT INTO blocks (blocker_id, blocked_id)
+       VALUES ($1, $2)
        ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
-      [req.userId, value.blockedId, value.reason || null]
+      [req.userId, value.blockedId]
     );
+    // Reason varsa ayrıca eklemeye çalış; kolon yoksa sessizce geç
+    if (value.reason) {
+      try {
+        await pool.query(
+          'UPDATE blocks SET reason = $3 WHERE blocker_id = $1 AND blocked_id = $2',
+          [req.userId, value.blockedId, value.reason]
+        );
+      } catch (e) {
+        /* reason kolonu yoksa pas geç */
+      }
+    }
 
     console.log(`[block] user=${req.userId} blocked=${value.blockedId}`);
     res.status(201).json({ ok: true });
@@ -58,14 +70,27 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
 // GET /blocks — engellediklerimi listele
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const r = await pool.query(
-      `SELECT b.blocked_id AS id, u.display_name, b.created_at, b.reason
-       FROM blocks b
-       JOIN users u ON u.id = b.blocked_id
-       WHERE b.blocker_id = $1
-       ORDER BY b.created_at DESC`,
-      [req.userId]
-    );
+    // Reason kolonu eski sürümde olmayabilir; önce reason'lı dene, fail olursa reason'sız
+    let r;
+    try {
+      r = await pool.query(
+        `SELECT b.blocked_id AS id, u.display_name, b.created_at, b.reason
+         FROM blocks b
+         JOIN users u ON u.id = b.blocked_id
+         WHERE b.blocker_id = $1
+         ORDER BY b.created_at DESC`,
+        [req.userId]
+      );
+    } catch (e) {
+      r = await pool.query(
+        `SELECT b.blocked_id AS id, u.display_name, b.created_at, NULL AS reason
+         FROM blocks b
+         JOIN users u ON u.id = b.blocked_id
+         WHERE b.blocker_id = $1
+         ORDER BY b.created_at DESC`,
+        [req.userId]
+      );
+    }
     res.json({ blocked: r.rows });
   } catch (err) {
     next(err);
