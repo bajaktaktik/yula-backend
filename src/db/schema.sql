@@ -312,14 +312,9 @@ CREATE TABLE IF NOT EXISTS reports (
   reviewer_notes TEXT,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_reports_status_created ON reports (status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_reports_target ON reports (target_type, target_id);
-CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id);
 
--- Block tablosuna isteğe bağlı sebep alanı
-ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reason TEXT;
-
--- Reports tablosu eski sürümden var olabilir, eksik kolonları ekle:
+-- Reports tablosu eski sürümden var olabilir, eksik kolonları ekle.
+-- INDEX'lerden ÖNCE çalışmalı çünkü index'ler target_type/target_id'ye dayanıyor.
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS target_type TEXT;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS target_id UUID;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS reason TEXT;
@@ -328,3 +323,10 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS reviewer_notes TEXT;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS reporter_id UUID;
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_reports_status_created ON reports (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON reports (target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id);
+
+-- Block tablosuna isteğe bağlı sebep alanı
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reason TEXT;
