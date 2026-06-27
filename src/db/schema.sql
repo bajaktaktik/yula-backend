@@ -318,3 +318,13 @@ CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id);
 
 -- Block tablosuna isteğe bağlı sebep alanı
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reason TEXT;
+
+-- Reports tablosu eski sürümden var olabilir, eksik kolonları ekle:
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS target_type TEXT;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS target_id UUID;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS reviewer_notes TEXT;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS reporter_id UUID;
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();

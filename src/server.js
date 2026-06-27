@@ -74,15 +74,32 @@ const io = new SocketServer(server, { cors: { origin: '*' } });
 setupChat(io);
 
 // Başlangıçta schema migration otomatik çalışır (idempotent — IF NOT EXISTS).
-// Yeni column/index ekleyince ayrıca `npm run migrate` çalıştırmaya gerek yok.
+// Tek pool.query(multi-statement) hata atınca tüm batch fail oluyor → her komutu
+// AYRI çalıştırıyoruz, hata olunca diğerleri durmaz.
 (async () => {
   try {
     const fs = require('fs');
     const path = require('path');
     const pool = require('./db/pool');
     const sql = fs.readFileSync(path.join(__dirname, 'db', 'schema.sql'), 'utf8');
-    await pool.query(sql);
-    console.log('[migrate] Şema güncel.');
+    // Yorumları temizle, semicolon ile böl
+    const statements = sql
+      .replace(/--[^\n]*\n/g, '\n')
+      .split(/;\s*$/m)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    let ok = 0, fail = 0;
+    for (const stmt of statements) {
+      try {
+        await pool.query(stmt);
+        ok++;
+      } catch (e) {
+        fail++;
+        // İlk 80 karakter komutu logla — hangi komut fail etti görelim
+        console.warn(`[migrate] komut fail: ${e.message} → ${stmt.slice(0, 80).replace(/\s+/g, ' ')}...`);
+      }
+    }
+    console.log(`[migrate] tamamlandı: ${ok} OK, ${fail} fail`);
   } catch (e) {
     console.error('[migrate] Şema migration hatası:', e.message);
     // Migrate hatası fatal değil — server yine başlasın (eski schema ile çalışır)
