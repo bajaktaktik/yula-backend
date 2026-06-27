@@ -296,3 +296,25 @@ UPDATE categories
 SET parent_id = (SELECT id FROM categories WHERE slug = 'vasita' AND parent_id IS NULL),
     ordering = 1
 WHERE slug = 'otomobil' AND parent_id IS NULL;
+
+-- Apple Guideline 1.2 — User-Generated Content moderation:
+-- Kullanıcılar uygunsuz içerik veya kötü davranan kullanıcıları şikayet edebilir.
+-- Moderasyon ekibi 24 saat içinde inceler ve aksiyon alır.
+CREATE TABLE IF NOT EXISTS reports (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  reporter_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_type  TEXT NOT NULL CHECK (target_type IN ('listing', 'message', 'user')),
+  target_id    UUID NOT NULL,
+  reason       TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'reviewed', 'action_taken', 'dismissed')),
+  reviewed_at  TIMESTAMPTZ,
+  reviewer_notes TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reports_status_created ON reports (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON reports (target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id);
+
+-- Block tablosuna isteğe bağlı sebep alanı
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS reason TEXT;

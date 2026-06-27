@@ -18,6 +18,8 @@ const hiddenRoutes = require('./routes/hidden');
 const conversationRoutes = require('./routes/conversations');
 const notificationRoutes = require('./routes/notifications');
 const genderChangeRoutes = require('./routes/gender-change');
+const reportRoutes = require('./routes/reports');
+const blockRoutes = require('./routes/blocks');
 const { setupChat } = require('./sockets/chat');
 
 const app = express();
@@ -58,6 +60,8 @@ app.use('/hidden', hiddenRoutes);
 app.use('/conversations', conversationRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/gender-change', genderChangeRoutes);
+app.use('/reports', reportRoutes);
+app.use('/blocks', blockRoutes);
 
 // Hata yakalayıcı
 app.use((err, req, res, next) => {
