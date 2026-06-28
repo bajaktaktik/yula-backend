@@ -177,6 +177,59 @@ router.post('/reports/:id/action', requireAuth, requireAdmin, async (req, res, n
   }
 });
 
+// GET /admin/sms-balance — Twilio ve NetGSM bakiyeleri
+router.get('/sms-balance', requireAuth, requireAdmin, async (req, res, next) => {
+  const result = { twilio: null, netgsm: null };
+
+  // Twilio
+  const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+  const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+  if (twilioSid && twilioToken) {
+    try {
+      const twilio = require('twilio')(twilioSid, twilioToken);
+      const b = await twilio.balance.fetch();
+      result.twilio = {
+        balance: parseFloat(b.balance),
+        currency: b.currency || 'USD',
+        ok: true,
+      };
+    } catch (e) {
+      result.twilio = { ok: false, error: e.message };
+    }
+  }
+
+  // NetGSM — text response döner: "balance|son_yukleme" formatında
+  const netgsmUser = process.env.NETGSM_USERCODE;
+  const netgsmPass = process.env.NETGSM_PASSWORD;
+  if (netgsmUser && netgsmPass) {
+    try {
+      const axios = require('axios');
+      const r = await axios.get('https://api.netgsm.com.tr/balance/list/get', {
+        params: { usercode: netgsmUser, password: netgsmPass, stip: 1 },
+        timeout: 8000,
+      });
+      // Response: "1234.56|son_yuklenen" veya error code (50, 60, vs)
+      const text = String(r.data || '').trim();
+      if (/^[\d.]+/.test(text)) {
+        const [balanceStr, lastTopupStr] = text.split('|');
+        result.netgsm = {
+          balance: parseFloat(balanceStr),
+          last_topup: lastTopupStr || null,
+          currency: 'KREDİ',
+          ok: true,
+        };
+      } else {
+        // NetGSM error codes: 30=auth, 50=user blocked, vs.
+        result.netgsm = { ok: false, error: `NetGSM kod: ${text}` };
+      }
+    } catch (e) {
+      result.netgsm = { ok: false, error: e.message };
+    }
+  }
+
+  res.json(result);
+});
+
 // GET /admin/stats — özet
 router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
   try {
