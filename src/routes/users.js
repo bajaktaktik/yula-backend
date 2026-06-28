@@ -5,6 +5,12 @@ const { requireAuth } = require('../auth/middleware');
 
 const router = express.Router();
 
+// Admin user_id'leri env'den
+const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
@@ -12,7 +18,10 @@ router.get('/me', requireAuth, async (req, res, next) => {
       [req.userId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'not_found' });
-    res.json({ user: rows[0] });
+    const user = rows[0];
+    // Frontend admin menüsünü gösterip göstermeyeceğini bilmek için
+    user.is_admin = ADMIN_USER_IDS.includes(user.id);
+    res.json({ user });
   } catch (err) {
     next(err);
   }
