@@ -6,8 +6,35 @@ const express = require('express');
 const Joi = require('joi');
 const pool = require('../db/pool');
 const { requireAuth } = require('../auth/middleware');
+const push = require('../services/push');
 
 const router = express.Router();
+
+// Yeni şikayet → admin kullanıcılarına push bildirim
+const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+
+async function notifyAdmins(report) {
+  if (ADMIN_USER_IDS.length === 0) return;
+  const typeLabel = report.target_type === 'listing' ? 'İlan'
+                  : report.target_type === 'message' ? 'Mesaj'
+                  : 'Kullanıcı';
+  for (const adminId of ADMIN_USER_IDS) {
+    try {
+      await push.sendToUser(adminId, {
+        title: `🚨 Yeni ${typeLabel} Şikayeti`,
+        body: report.reason.length > 100 ? report.reason.slice(0, 97) + '…' : report.reason,
+        data: {
+          type: 'new_report',
+          reportId: report.id,
+          targetType: report.target_type,
+        },
+      });
+    } catch (e) {
+      console.error('[admin-notify] push fail:', e.message);
+    }
+  }
+}
 
 const reportSchema = Joi.object({
   targetType: Joi.string().valid('listing', 'message', 'user').required(),
@@ -38,11 +65,14 @@ router.post('/', requireAuth, async (req, res, next) => {
     const ins = await pool.query(
       `INSERT INTO reports (reporter_id, target_type, target_id, reason)
        VALUES ($1, $2, $3, $4)
-       RETURNING id, created_at`,
+       RETURNING id, created_at, target_type, target_id, reason`,
       [req.userId, value.targetType, value.targetId, value.reason]
     );
 
     console.log(`[report] yeni: ${value.targetType}/${value.targetId} by user=${req.userId}`);
+
+    // Admin'lere push notification — fire-and-forget, response'u geciktirme
+    notifyAdmins(ins.rows[0]).catch((e) => console.error('[admin-notify] fail:', e.message));
 
     res.status(201).json({
       id: ins.rows[0].id,
