@@ -51,11 +51,26 @@ function genderFilter(viewerGender) {
 //   limit, offset
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const visible = await graph.getVisibleUserIds(req.userId); // Map<id, degree>
-    if (visible.size === 0) {
+    const includeSecondDegree =
+      req.query.includeSecondDegree === '1' || req.query.includeSecondDegree === 'true';
+
+    const visible = await graph.getVisibleUserIds(req.userId); // 1. derece
+    // 2. derece — sadece istenirse
+    const secondMap = includeSecondDegree
+      ? await graph.getSecondDegreeMap(req.userId)
+      : new Map();
+
+    if (visible.size === 0 && secondMap.size === 0) {
       return res.json({ listings: [], message: 'Rehberinde henüz Abadan kullanan kimse yok. Arkadaşlarını davet et!' });
     }
-    const ids = [...visible.keys()];
+
+    // Tüm görünür kullanıcılar (1. + 2. derece); tier lookup için map tut
+    const tierMap = new Map(); // user_id → { tier, via_user_id, via_name }
+    for (const uid of visible.keys()) tierMap.set(uid, { tier: 1 });
+    for (const [uid, info] of secondMap.entries()) {
+      if (!tierMap.has(uid)) tierMap.set(uid, { tier: 2, via_user_id: info.via_user_id, via_name: info.via_name });
+    }
+    const ids = Array.from(tierMap.keys());
     const myGender = await getMyGender(req.userId);
     const limit = Math.min(parseInt(req.query.limit || '30', 10), 100);
     const offset = parseInt(req.query.offset || '0', 10);
@@ -176,15 +191,35 @@ router.get('/', requireAuth, async (req, res, next) => {
     `;
     const { rows } = await pool.query(sql, params);
 
-    const result = rows.map((row) => ({
-      ...row,
-      degree: 1, // Sadece rehberdeki kişiler
-      // Mobil tarafında photos[0] ile vitrin gösteriliyor → backward-compat array sun
-      photos: row.cover_photo ? [row.cover_photo] : [],
-      photo_count: row.photo_count || 0,
-    }));
+    const result = rows.map((row) => {
+      const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
+      const tier = tierInfo.tier;
+      // 2. derece ise gerçek isim SAKLI — via bilgisi verilir
+      const isSecond = tier === 2;
+      return {
+        ...row,
+        degree: tier,
+        tier,
+        seller_name: isSecond ? null : row.seller_name,
+        seller_avatar: isSecond ? null : row.seller_avatar,
+        // 2. derece için aracı bilgisi
+        via_user_id: isSecond ? tierInfo.via_user_id : null,
+        via_name: isSecond ? tierInfo.via_name : null,
+        // Mobil tarafında photos[0] ile vitrin gösteriliyor
+        photos: row.cover_photo ? [row.cover_photo] : [],
+        photo_count: row.photo_count || 0,
+      };
+    });
 
-    res.json({ listings: result, count: result.length });
+    // Sayaçlar: 1. ve 2. derece ayrı (deduplication zaten SQL'de)
+    const firstCount = result.filter((r) => r.tier === 1).length;
+    const secondCount = result.filter((r) => r.tier === 2).length;
+
+    res.json({
+      listings: result,
+      count: result.length,
+      counts: { first: firstCount, second: secondCount },
+    });
   } catch (err) {
     next(err);
   }
