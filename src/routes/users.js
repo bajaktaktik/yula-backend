@@ -125,17 +125,36 @@ router.get('/me/connections', requireAuth, async (req, res, next) => {
       : `(l.restricted_to_gender IS NULL)`;
 
     const { rows } = await pool.query(
-      `SELECT u.id, u.avatar_url,
-              -- Rehberdeki isim öncelikli, yoksa kullanıcının kendi display_name'i.
-              -- [DEMO] prefix'i (seed-listings) UI'da gözükmesin diye soyuluyor.
+      `WITH my_first_degree_ids AS (
+         SELECT u.id AS user_id
+         FROM user_contacts uc
+         JOIN users u ON u.phone_hash = uc.contact_phone_hash
+         WHERE uc.user_id = $1 AND u.status = 'active'
+       )
+       SELECT u.id, u.avatar_url,
               REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS name,
+              -- Bu tanıdığın kendi aktif ilan sayısı
               (
                 SELECT COUNT(*)::int FROM listings l
                 WHERE l.user_id = u.id
                   AND l.status = 'active'
                   AND ${genderCond}
                   AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $1)
-              ) AS listing_count
+              ) AS listing_count,
+              -- Bu tanıdığın rehberindeki 2. derece kullanıcıların (kendi rehberimde OLMAYAN) toplam ilan sayısı
+              (
+                SELECT COUNT(DISTINCT l2.id)::int
+                FROM listings l2
+                JOIN users u2 ON u2.id = l2.user_id
+                JOIN user_contacts uc2 ON uc2.user_id = u.id AND uc2.contact_phone_hash = u2.phone_hash
+                WHERE l2.status = 'active'
+                  AND u2.status = 'active'
+                  AND u2.id <> $1
+                  AND u2.id NOT IN (SELECT user_id FROM my_first_degree_ids)
+                  AND (l2.restricted_to_gender IS NULL
+                       ${myGender === 'female' || myGender === 'male' ? `OR l2.restricted_to_gender = '${myGender}'` : ''})
+                  AND l2.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $1)
+              ) AS friend_of_friend_count
        FROM user_contacts uc
        JOIN users u ON u.phone_hash = uc.contact_phone_hash
        WHERE uc.user_id = $1
