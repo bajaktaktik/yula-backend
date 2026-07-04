@@ -79,13 +79,50 @@ router.post('/register-pin', async (req, res, next) => {
   }
 });
 
+// Demo/Reviewer PIN — Apple/Play Store reviewer'ı ve testler için sabit PIN.
+// Kullanım: REVIEWER_PHONES env'indeki numaralar ile PIN=DEMO_PIN → direkt giriş.
+// (SMS OTP veya gerçek PIN kaydı gerekmez; hesap yoksa otomatik oluşturulur.)
+const DEMO_PIN = process.env.DEMO_PIN || '4242';
+
 // POST /auth/login-pin → mevcut hesap girişi (telefon + PIN)
 router.post('/login-pin', async (req, res, next) => {
   try {
     const { value, error } = loginSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
+    const e164 = normalizePhone(value.phone);
     const phoneHash = rehashClientHash(value.phoneSha256);
+
+    // ─── DEMO BYPASS ───
+    // Reviewer telefonu + DEMO PIN → hesap yoksa oluştur, direkt token dön
+    if (e164 && REVIEWER_PHONES.includes(e164) && value.pin === DEMO_PIN) {
+      let user;
+      const existing = await pool.query(
+        'SELECT id, display_name, avatar_url, bio, gender, location_city FROM users WHERE phone_hash = $1',
+        [phoneHash]
+      );
+      if (existing.rows.length > 0) {
+        user = existing.rows[0];
+      } else {
+        const ins = await pool.query(
+          `INSERT INTO users (phone_hash, display_name, onboarded_at)
+           VALUES ($1, 'Demo Kullanıcı', now())
+           RETURNING id, display_name, avatar_url, bio, gender, location_city`,
+          [phoneHash]
+        );
+        user = ins.rows[0];
+      }
+      await pool.query('UPDATE users SET last_active_at = now() WHERE id = $1', [user.id]);
+      // Demo hesap için seed'i tetikle (feed dolu görünsün)
+      ensureReviewerSeed(user.id).catch((e) => console.error('[demo-seed]', e.message));
+      console.log(`[auth] demo login bypass user=${user.id} phone=${e164}`);
+      return res.json({
+        user,
+        tokens: { access: signAccess(user.id), refresh: signRefresh(user.id) },
+      });
+    }
+
+    // ─── NORMAL PIN GİRİŞİ ───
     const q = await pool.query(
       'SELECT id, display_name, avatar_url, bio, gender, location_city, pin_hash FROM users WHERE phone_hash = $1',
       [phoneHash]
