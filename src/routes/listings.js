@@ -311,6 +311,22 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /listings/:id/intermediaries — 2. derece ilanı için aracıların listesi
+// Kullanıcı hangi tanıdığından bilgi sormak istediğini seçer.
+router.get('/:id/intermediaries', requireAuth, async (req, res, next) => {
+  try {
+    const lres = await pool.query('SELECT user_id FROM listings WHERE id = $1', [req.params.id]);
+    if (lres.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const sellerId = lres.rows[0].user_id;
+    if (sellerId === req.userId) return res.json({ intermediaries: [] });
+
+    const intermediaries = await graph.getIntermediariesFor(req.userId, sellerId);
+    res.json({ intermediaries });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /listings/:id
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {

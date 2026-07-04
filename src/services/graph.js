@@ -117,4 +117,32 @@ async function invalidate(userId) {
   }
 }
 
-module.exports = { getVisibleUserIds, getSecondDegreeMap, invalidate };
+/**
+ * Belirli bir 2. derece kullanıcının TÜM aracılarını (mutual friends) döner.
+ * Kullanıcı hangi tanıdığından bilgi soracağını seçebilir.
+ */
+async function getIntermediariesFor(userId, targetUserId) {
+  const firstDegree = await getVisibleUserIds(userId);
+  if (firstDegree.size === 0) return [];
+  const firstDegreeIds = Array.from(firstDegree.keys());
+
+  const { rows } = await pool.query(
+    `SELECT DISTINCT
+       u_via.id::text AS user_id,
+       COALESCE(uc_me.contact_name, u_via.display_name, 'Kullanıcı') AS name,
+       u_via.avatar_url AS avatar_url
+     FROM user_contacts uc_via
+     JOIN users u2 ON u2.phone_hash = uc_via.contact_phone_hash
+     JOIN users u_via ON u_via.id = uc_via.user_id
+     LEFT JOIN user_contacts uc_me
+       ON uc_me.user_id = $1
+       AND uc_me.contact_phone_hash = u_via.phone_hash
+     WHERE uc_via.user_id = ANY($2::uuid[])
+       AND u2.id = $3
+     ORDER BY name`,
+    [userId, firstDegreeIds, targetUserId]
+  );
+  return rows;
+}
+
+module.exports = { getVisibleUserIds, getSecondDegreeMap, getIntermediariesFor, invalidate };

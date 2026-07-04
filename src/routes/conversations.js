@@ -56,6 +56,9 @@ router.get('/', requireAuth, async (req, res, next) => {
 // POST /conversations  →  ilan için sohbet oluştur veya mevcut olanı döndür
 const createSchema = Joi.object({
   listingId: Joi.string().uuid().required(),
+  // 2. derece ilanları için opsiyonel: hangi aracı (via) ile mesajlaşacağını belirt.
+  // Belirtilmezse alfabetik ilk mutual kullanılır.
+  intermediaryId: Joi.string().uuid().optional(),
 });
 
 router.post('/', requireAuth, async (req, res, next) => {
@@ -85,12 +88,23 @@ router.post('/', requireAuth, async (req, res, next) => {
     let chatTargetId = listing.user_id;
     let isSecondDegree = false;
     if (visibleRes.rows.length === 0) {
-      const secondMap = await graph.getSecondDegreeMap(req.userId);
-      const info = secondMap.get(listing.user_id);
-      if (!info) {
-        return res.status(403).json({ error: 'not_in_your_network' });
+      // Kullanıcı belirli bir aracı seçtiyse onu doğrula
+      if (value.intermediaryId) {
+        const intermediaries = await graph.getIntermediariesFor(req.userId, listing.user_id);
+        const chosen = intermediaries.find((i) => i.user_id === value.intermediaryId);
+        if (!chosen) {
+          return res.status(403).json({ error: 'invalid_intermediary' });
+        }
+        chatTargetId = chosen.user_id;
+      } else {
+        // Otomatik: alfabetik ilk mutual
+        const secondMap = await graph.getSecondDegreeMap(req.userId);
+        const info = secondMap.get(listing.user_id);
+        if (!info) {
+          return res.status(403).json({ error: 'not_in_your_network' });
+        }
+        chatTargetId = info.via_user_id;
       }
-      chatTargetId = info.via_user_id;
       isSecondDegree = true;
     }
 
