@@ -53,27 +53,59 @@ router.get('/', requireAuth, async (req, res, next) => {
   try {
     const includeSecondDegree =
       req.query.includeSecondDegree === '1' || req.query.includeSecondDegree === 'true';
+    // viaUserId: sadece belirli 1. derece tanıdığın rehberindeki 2. derece kullanıcıların ilanları
+    // Kullanıcının rehberinde OLMAYAN kişiler filtresi uygulanır.
+    const viaUserId = req.query.viaUserId ? String(req.query.viaUserId) : null;
 
     const visible = await graph.getVisibleUserIds(req.userId); // 1. derece
-    // 2. derece — sadece istenirse
-    const secondMap = includeSecondDegree
-      ? await graph.getSecondDegreeMap(req.userId)
-      : new Map();
-
-    if (visible.size === 0 && secondMap.size === 0) {
-      return res.json({ listings: [], message: 'Rehberinde henüz Abadan kullanan kimse yok. Arkadaşlarını davet et!' });
-    }
-
-    // Tüm görünür kullanıcılar (1. + 2. derece); tier lookup için map tut
     const tierMap = new Map(); // user_id → { tier, via_user_id, via_name, mutual_count }
-    for (const uid of visible.keys()) tierMap.set(uid, { tier: 1 });
-    for (const [uid, info] of secondMap.entries()) {
-      if (!tierMap.has(uid)) tierMap.set(uid, {
-        tier: 2,
-        via_user_id: info.via_user_id,
-        via_name: info.via_name,
-        mutual_count: info.mutual_count,
-      });
+
+    if (viaUserId) {
+      // Sadece bu aracının rehberindeki 2. derece kullanıcıları çek
+      if (!visible.has(viaUserId)) {
+        return res.status(403).json({ error: 'not_your_contact' });
+      }
+      const { rows: fofRows } = await pool.query(
+        `SELECT u2.id::text AS id, COALESCE(uc_me.contact_name, u_via.display_name, 'Kullanıcı') AS via_name
+         FROM user_contacts uc
+         JOIN users u2 ON u2.phone_hash = uc.contact_phone_hash
+         JOIN users u_via ON u_via.id = uc.user_id
+         LEFT JOIN user_contacts uc_me
+           ON uc_me.user_id = $1 AND uc_me.contact_phone_hash = u_via.phone_hash
+         WHERE uc.user_id = $2
+           AND u2.status = 'active'
+           AND u2.id != $1
+           AND u2.id NOT IN (
+             SELECT u1.id FROM user_contacts uc1
+             JOIN users u1 ON u1.phone_hash = uc1.contact_phone_hash
+             WHERE uc1.user_id = $1
+           )`,
+        [req.userId, viaUserId]
+      );
+      for (const r of fofRows) {
+        tierMap.set(r.id, { tier: 2, via_user_id: viaUserId, via_name: r.via_name, mutual_count: 1 });
+      }
+      if (tierMap.size === 0) {
+        return res.json({ listings: [], counts: { first: 0, second: 0 } });
+      }
+    } else {
+      // Normal akış: 1. + 2. derece (istenirse)
+      const secondMap = includeSecondDegree
+        ? await graph.getSecondDegreeMap(req.userId)
+        : new Map();
+
+      if (visible.size === 0 && secondMap.size === 0) {
+        return res.json({ listings: [], message: 'Rehberinde henüz Abadan kullanan kimse yok. Arkadaşlarını davet et!' });
+      }
+      for (const uid of visible.keys()) tierMap.set(uid, { tier: 1 });
+      for (const [uid, info] of secondMap.entries()) {
+        if (!tierMap.has(uid)) tierMap.set(uid, {
+          tier: 2,
+          via_user_id: info.via_user_id,
+          via_name: info.via_name,
+          mutual_count: info.mutual_count,
+        });
+      }
     }
     const ids = Array.from(tierMap.keys());
     const myGender = await getMyGender(req.userId);
