@@ -11,8 +11,11 @@ const router = express.Router();
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     // Kullanıcının görebileceği satıcılar
+    // 1. + 2. derece — kategori sayaçları da tanıdıklarımın tanıdıklarını içersin
     const visible = await graph.getVisibleUserIds(req.userId);
-    const visibleIds = [...visible.keys()];
+    const secondMap = await graph.getSecondDegreeMap(req.userId);
+    const allIds = new Set([...visible.keys(), ...secondMap.keys()]);
+    const visibleIds = Array.from(allIds);
 
     // Cinsiyet filtresi
     const me = await pool.query('SELECT gender FROM users WHERE id = $1', [req.userId]);
