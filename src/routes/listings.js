@@ -65,10 +65,15 @@ router.get('/', requireAuth, async (req, res, next) => {
     }
 
     // Tüm görünür kullanıcılar (1. + 2. derece); tier lookup için map tut
-    const tierMap = new Map(); // user_id → { tier, via_user_id, via_name }
+    const tierMap = new Map(); // user_id → { tier, via_user_id, via_name, mutual_count }
     for (const uid of visible.keys()) tierMap.set(uid, { tier: 1 });
     for (const [uid, info] of secondMap.entries()) {
-      if (!tierMap.has(uid)) tierMap.set(uid, { tier: 2, via_user_id: info.via_user_id, via_name: info.via_name });
+      if (!tierMap.has(uid)) tierMap.set(uid, {
+        tier: 2,
+        via_user_id: info.via_user_id,
+        via_name: info.via_name,
+        mutual_count: info.mutual_count,
+      });
     }
     const ids = Array.from(tierMap.keys());
     const myGender = await getMyGender(req.userId);
@@ -202,10 +207,9 @@ router.get('/', requireAuth, async (req, res, next) => {
         tier,
         seller_name: isSecond ? null : row.seller_name,
         seller_avatar: isSecond ? null : row.seller_avatar,
-        // 2. derece için aracı bilgisi
         via_user_id: isSecond ? tierInfo.via_user_id : null,
         via_name: isSecond ? tierInfo.via_name : null,
-        // Mobil tarafında photos[0] ile vitrin gösteriliyor
+        mutual_count: isSecond ? tierInfo.mutual_count : null,
         photos: row.cover_photo ? [row.cover_photo] : [],
         photo_count: row.photo_count || 0,
       };
@@ -336,24 +340,47 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     if (rows.length === 0) return res.status(404).json({ error: 'not_found' });
     const listing = rows[0];
 
-    // MAHREMİYET: cinsiyet kısıtı varsa ve eşleşmiyorsa 404 (sanki ilan yokmuş gibi)
-    // Sahibi her zaman görebilir.
+    // MAHREMİYET: cinsiyet kısıtı varsa ve eşleşmiyorsa 404
     if (listing.user_id !== req.userId && listing.restricted_to_gender) {
       if (listing.restricted_to_gender !== myGender) {
         return res.status(404).json({ error: 'not_found' });
       }
     }
 
-    if (listing.user_id !== req.userId && !visible.has(listing.user_id)) {
-      return res.status(403).json({ error: 'not_in_your_network' });
+    const isOwn = listing.user_id === req.userId;
+    const inFirstDegree = visible.has(listing.user_id);
+    let tier = isOwn ? 0 : (inFirstDegree ? 1 : null);
+    let viaInfo = null;
+
+    // 2. derece kontrolü — sadece ilk kontrolde bulunamazsa gönder
+    if (!isOwn && !inFirstDegree) {
+      const secondMap = await graph.getSecondDegreeMap(req.userId);
+      const info = secondMap.get(listing.user_id);
+      if (info) {
+        tier = 2;
+        viaInfo = info;
+      } else {
+        return res.status(403).json({ error: 'not_in_your_network' });
+      }
     }
+
+    const isSecond = tier === 2;
+
     res.json({
       ...listing,
-      degree: listing.user_id === req.userId ? 0 : visible.get(listing.user_id),
+      // 2. derece için gerçek isim gizli
+      seller_name: isSecond ? null : listing.seller_name,
+      seller_avatar: isSecond ? null : listing.seller_avatar,
+      user_id: isSecond ? null : listing.user_id, // 2. derece'de user_id de gizli (mesaj yönlendirme via'ya)
+      real_user_id: listing.user_id, // referans için (mesajlaşmada backend kullanır)
+      tier,
+      degree: tier,
+      via_user_id: viaInfo?.via_user_id || null,
+      via_name: viaInfo?.via_name || null,
+      mutual_count: viaInfo?.mutual_count || null,
       photos: listing.photos || [],
       photo_thumbs: listing.photo_thumbs || [],
-      // MAHREMİYET: sadece sahibi kendi kısıtını görsün; başkalarına alanı bile gönderme
-      restricted_to_gender: listing.user_id === req.userId ? listing.restricted_to_gender : undefined,
+      restricted_to_gender: isOwn ? listing.restricted_to_gender : undefined,
     });
   } catch (err) {
     next(err);

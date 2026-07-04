@@ -41,17 +41,15 @@ async function getVisibleUserIds(userId) {
 
 /**
  * 2. derece bağlantılar — tanıdığının tanıdığı.
- * Dönüş: Map<user_id, { via_user_id, via_name }>
- *   via_user_id: aracı 1. derece kullanıcı (kullanıcının rehberinde)
- *   via_name: aracı kullanıcının rehberdeki adı (user_contacts.contact_name)
+ * Dönüş: Map<user_id, { via_user_id, via_name, mutual_count }>
+ *   via_user_id: alfabetik ilk aracı 1. derece kullanıcı
+ *   via_name: aracının kullanıcının rehberindeki adı
+ *   mutual_count: kaç ortak arkadaş üzerinden ulaşılabilir
  *
- * Deduplication: aynı 2. derece kullanıcı birden çok mutual üzerinden ulaşılsa bile
- * MAP tek satır tutar; via alfabetik olarak ilki seçilir → tutarlı.
- *
- * Engellenen kullanıcılar hem 1. hem 2. dereceden filtrelenir.
+ * Deduplication: aynı user_id tek satır; ama mutual_count gerçek sayıyı gösterir.
+ * Engellenen kullanıcılar filtrelenir.
  */
 async function getSecondDegreeMap(userId) {
-  // Önce 1. derece + engellenmiş kullanıcıları al
   const firstDegree = await getVisibleUserIds(userId);
   if (firstDegree.size === 0) return new Map();
 
@@ -63,33 +61,49 @@ async function getSecondDegreeMap(userId) {
   );
   const blockedSet = new Set(blocked.rows.map((r) => r.id));
 
-  // 2. derece kullanıcıları çek. Her satır: (user_id, via_user_id, via_name)
-  // via_name = current user'ın rehberindeki isim (user_contacts.contact_name)
-  //
-  // NOT: aynı user_id birden fazla via ile gelirse ilk (alfabetik) satır alınır.
+  // Alt sorgu ile mutual sayısını + alfabetik ilk via'yı hesapla
   const { rows } = await pool.query(
-    `SELECT DISTINCT ON (u2.id)
-       u2.id::text AS user_id,
-       uc_me.user_id::text AS via_user_id,
-       COALESCE(uc_me.contact_name, u_via.display_name, 'Kullanıcı') AS via_name
-     FROM user_contacts uc_via
-     JOIN users u2 ON u2.phone_hash = uc_via.contact_phone_hash
-     JOIN users u_via ON u_via.id = uc_via.user_id
-     LEFT JOIN user_contacts uc_me
-       ON uc_me.user_id = $1
-       AND uc_me.contact_phone_hash = u_via.phone_hash
-     WHERE uc_via.user_id = ANY($2::uuid[])
-       AND u2.status = 'active'
-       AND u2.id != $1
-       AND u2.id::text != ALL($3::text[])
-     ORDER BY u2.id, COALESCE(uc_me.contact_name, u_via.display_name, '~')`,
+    `WITH candidates AS (
+       SELECT
+         u2.id::text AS user_id,
+         uc_via.user_id::text AS via_user_id,
+         COALESCE(uc_me.contact_name, u_via.display_name, 'Kullanıcı') AS via_name
+       FROM user_contacts uc_via
+       JOIN users u2 ON u2.phone_hash = uc_via.contact_phone_hash
+       JOIN users u_via ON u_via.id = uc_via.user_id
+       LEFT JOIN user_contacts uc_me
+         ON uc_me.user_id = $1
+         AND uc_me.contact_phone_hash = u_via.phone_hash
+       WHERE uc_via.user_id = ANY($2::uuid[])
+         AND u2.status = 'active'
+         AND u2.id != $1
+         AND u2.id::text != ALL($3::text[])
+     ),
+     first_via AS (
+       SELECT DISTINCT ON (user_id)
+         user_id, via_user_id, via_name
+       FROM candidates
+       ORDER BY user_id, via_name
+     ),
+     counts AS (
+       SELECT user_id, COUNT(DISTINCT via_user_id)::int AS mutual_count
+       FROM candidates
+       GROUP BY user_id
+     )
+     SELECT fv.user_id, fv.via_user_id, fv.via_name, c.mutual_count
+     FROM first_via fv
+     JOIN counts c ON c.user_id = fv.user_id`,
     [userId, firstDegreeIds, firstDegreeIds]
   );
 
   const map = new Map();
   for (const r of rows) {
     if (blockedSet.has(r.user_id)) continue;
-    map.set(r.user_id, { via_user_id: r.via_user_id, via_name: r.via_name });
+    map.set(r.user_id, {
+      via_user_id: r.via_user_id,
+      via_name: r.via_name,
+      mutual_count: r.mutual_count,
+    });
   }
   return map;
 }
