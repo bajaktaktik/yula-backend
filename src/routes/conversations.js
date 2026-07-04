@@ -63,7 +63,7 @@ router.post('/', requireAuth, async (req, res, next) => {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
-    // 1. Listing fetch — bunu beklemek zorundayız (satıcı id'sini öğreniyoruz)
+    // 1. Listing fetch
     const lres = await pool.query('SELECT id, user_id FROM listings WHERE id = $1', [value.listingId]);
     if (lres.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
     const listing = lres.rows[0];
@@ -71,45 +71,57 @@ router.post('/', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'cannot_message_own_listing' });
     }
 
-    // 2. PARALEL: network kontrolü (single-row, hızlı) + existing conversation kontrolü
-    //    Eski hâlde graph.getVisibleUserIds tüm rehber listesini çekiyordu — şimdi sadece
-    //    "bu satıcı görünür mü" tek sorguya indirildi (indeksle <10ms).
-    const [visibleRes, existingRes, blockedRes] = await Promise.all([
-      pool.query(
-        `SELECT 1 FROM user_contacts uc
-         JOIN users u ON u.phone_hash = uc.contact_phone_hash
-         WHERE uc.user_id = $1 AND u.id = $2 AND u.status = 'active'
-         LIMIT 1`,
-        [req.userId, listing.user_id]
-      ),
-      pool.query(
-        'SELECT id FROM conversations WHERE listing_id = $1 AND buyer_id = $2 LIMIT 1',
-        [value.listingId, req.userId]
-      ),
-      pool.query(
-        `SELECT 1 FROM blocks
-         WHERE (blocker_id = $1 AND blocked_id = $2)
-            OR (blocker_id = $2 AND blocked_id = $1)
-         LIMIT 1`,
-        [req.userId, listing.user_id]
-      ),
-    ]);
+    // 2. Network kontrolü — 1. derece mi kontrol et
+    const visibleRes = await pool.query(
+      `SELECT 1 FROM user_contacts uc
+       JOIN users u ON u.phone_hash = uc.contact_phone_hash
+       WHERE uc.user_id = $1 AND u.id = $2 AND u.status = 'active'
+       LIMIT 1`,
+      [req.userId, listing.user_id]
+    );
 
-    if (visibleRes.rows.length === 0 || blockedRes.rows.length > 0) {
-      return res.status(403).json({ error: 'not_in_your_network' });
+    // Chat hedefi: 1. derece ise satıcının kendisi;
+    // 2. derece ise aracı (via) kullanıcı — kullanıcı doğrudan 3. şahısla konuşmaz
+    let chatTargetId = listing.user_id;
+    let isSecondDegree = false;
+    if (visibleRes.rows.length === 0) {
+      const secondMap = await graph.getSecondDegreeMap(req.userId);
+      const info = secondMap.get(listing.user_id);
+      if (!info) {
+        return res.status(403).json({ error: 'not_in_your_network' });
+      }
+      chatTargetId = info.via_user_id;
+      isSecondDegree = true;
     }
 
-    // Mevcut sohbet varsa onu döndür (idempotent)
+    // Block kontrolü hedefe göre yap (aracı block'ta olabilir)
+    const blockedRes = await pool.query(
+      `SELECT 1 FROM blocks
+       WHERE (blocker_id = $1 AND blocked_id = $2)
+          OR (blocker_id = $2 AND blocked_id = $1)
+       LIMIT 1`,
+      [req.userId, chatTargetId]
+    );
+    if (blockedRes.rows.length > 0) {
+      return res.status(403).json({ error: 'blocked' });
+    }
+
+    // Mevcut sohbet varsa döndür (buyer + hedef seller ile)
+    const existingRes = await pool.query(
+      'SELECT id FROM conversations WHERE listing_id = $1 AND buyer_id = $2 AND seller_id = $3 LIMIT 1',
+      [value.listingId, req.userId, chatTargetId]
+    );
     if (existingRes.rows.length > 0) {
       return res.json({ conversation: { id: existingRes.rows[0].id, listing_id: value.listingId } });
     }
 
-    // 3. Yeni sohbet
+    // 3. Yeni sohbet — seller_id chatTargetId (2. derece'de aracı user)
     const ins = await pool.query(
       `INSERT INTO conversations (listing_id, buyer_id, seller_id)
        VALUES ($1, $2, $3) RETURNING id`,
-      [value.listingId, req.userId, listing.user_id]
+      [value.listingId, req.userId, chatTargetId]
     );
+    console.log(`[chat] user=${req.userId} → ${chatTargetId} (${isSecondDegree ? '2. derece via' : '1. derece'}) listing=${value.listingId}`);
     res.status(201).json({ conversation: { id: ins.rows[0].id, listing_id: value.listingId } });
   } catch (err) {
     next(err);
