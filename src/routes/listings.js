@@ -292,12 +292,30 @@ router.get('/mine', requireAuth, async (req, res, next) => {
 // Reels-style görüntüleme akışı. Daha geniş pencere → boş ekran azalır.
 router.get('/garage-sale', requireAuth, async (req, res, next) => {
   try {
+    const includeSecondDegree =
+      req.query.includeSecondDegree === '1' || req.query.includeSecondDegree === 'true';
     const visible = await graph.getVisibleUserIds(req.userId);
-    if (visible.size === 0) {
+    const secondMap = includeSecondDegree
+      ? await graph.getSecondDegreeMap(req.userId)
+      : new Map();
+
+    if (visible.size === 0 && secondMap.size === 0) {
       return res.json({ listings: [], message: 'Henüz tanıdığın yok. Önce rehberini senkronize et.' });
     }
-    const ids = [...visible.keys()];
-    const hours = Math.min(parseInt(req.query.hours || '720', 10), 720); // default + max 30 gün
+
+    // tier lookup için birleşik map
+    const tierMap = new Map();
+    for (const uid of visible.keys()) tierMap.set(uid, { tier: 1 });
+    for (const [uid, info] of secondMap.entries()) {
+      if (!tierMap.has(uid)) tierMap.set(uid, {
+        tier: 2,
+        via_user_id: info.via_user_id,
+        via_name: info.via_name,
+        mutual_count: info.mutual_count,
+      });
+    }
+    const ids = Array.from(tierMap.keys());
+    const hours = Math.min(parseInt(req.query.hours || '720', 10), 720);
     const myGender = await getMyGender(req.userId);
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
@@ -330,12 +348,23 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
     `;
     const { rows } = await pool.query(sql, [ids, hours, req.userId]);
 
-    const result = rows.map((row) => ({
-      ...row,
-      degree: 1,
-      photos: row.cover_photo ? [row.cover_photo] : [],
-      photo_count: row.photo_count || 0,
-    }));
+    const result = rows.map((row) => {
+      const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
+      const tier = tierInfo.tier;
+      const isSecond = tier === 2;
+      return {
+        ...row,
+        degree: tier,
+        tier,
+        seller_name: isSecond ? null : row.seller_name,
+        seller_avatar: isSecond ? null : row.seller_avatar,
+        via_user_id: isSecond ? tierInfo.via_user_id : null,
+        via_name: isSecond ? tierInfo.via_name : null,
+        mutual_count: isSecond ? tierInfo.mutual_count : null,
+        photos: row.cover_photo ? [row.cover_photo] : [],
+        photo_count: row.photo_count || 0,
+      };
+    });
 
     res.json({ listings: result, count: result.length, hours });
   } catch (err) {
