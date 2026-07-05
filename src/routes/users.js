@@ -186,14 +186,40 @@ router.get('/me/connections', requireAuth, async (req, res, next) => {
 // (Kendisi hariç.) Ana sayfa header'ında "Abadan · 23 kişi" göstermek için.
 router.get('/me/network-size', requireAuth, async (req, res, next) => {
   try {
-    const { rows } = await pool.query(
+    // 1. derece: kullanıcının rehberindeki Abadan kullanıcıları
+    const first = await pool.query(
       `SELECT COUNT(DISTINCT u.id)::int AS count
        FROM user_contacts uc
        JOIN users u ON u.phone_hash = uc.contact_phone_hash
-       WHERE uc.user_id = $1 AND u.id <> $1`,
+       WHERE uc.user_id = $1 AND u.id <> $1 AND u.status = 'active'`,
       [req.userId]
     );
-    res.json({ count: rows[0]?.count || 0 });
+
+    // 2. derece: 1. derecelerin rehberindeki, kullanıcının rehberinde OLMAYAN Abadan kullanıcıları
+    // (Mükerrer kişiler DISTINCT ile sayılmaz — aynı 2. derece kullanıcı birden fazla mutual'dan gelse bile TEK sayılır)
+    const second = await pool.query(
+      `SELECT COUNT(DISTINCT u2.id)::int AS count
+       FROM user_contacts uc1
+       JOIN users u1 ON u1.phone_hash = uc1.contact_phone_hash
+       JOIN user_contacts uc2 ON uc2.user_id = u1.id
+       JOIN users u2 ON u2.phone_hash = uc2.contact_phone_hash
+       WHERE uc1.user_id = $1
+         AND u1.status = 'active'
+         AND u2.status = 'active'
+         AND u2.id <> $1
+         AND u2.id NOT IN (
+           SELECT u3.id FROM user_contacts uc3
+           JOIN users u3 ON u3.phone_hash = uc3.contact_phone_hash
+           WHERE uc3.user_id = $1
+         )`,
+      [req.userId]
+    );
+
+    res.json({
+      count: first.rows[0]?.count || 0, // geri uyumluluk (eski istemciler için)
+      first: first.rows[0]?.count || 0,
+      second: second.rows[0]?.count || 0,
+    });
   } catch (err) {
     next(err);
   }
