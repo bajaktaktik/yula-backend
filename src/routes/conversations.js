@@ -88,22 +88,18 @@ router.post('/', requireAuth, async (req, res, next) => {
     let chatTargetId = listing.user_id;
     let isSecondDegree = false;
     if (visibleRes.rows.length === 0) {
-      // Kullanıcı belirli bir aracı seçtiyse onu doğrula
+      // Sadece spesifik satıcı için aracıları çek (hafif) — tüm 2. derece map'i değil
+      const intermediaries = await graph.getIntermediariesFor(req.userId, listing.user_id);
+      if (intermediaries.length === 0) {
+        return res.status(403).json({ error: 'not_in_your_network' });
+      }
       if (value.intermediaryId) {
-        const intermediaries = await graph.getIntermediariesFor(req.userId, listing.user_id);
         const chosen = intermediaries.find((i) => i.user_id === value.intermediaryId);
-        if (!chosen) {
-          return res.status(403).json({ error: 'invalid_intermediary' });
-        }
+        if (!chosen) return res.status(403).json({ error: 'invalid_intermediary' });
         chatTargetId = chosen.user_id;
       } else {
-        // Otomatik: alfabetik ilk mutual
-        const secondMap = await graph.getSecondDegreeMap(req.userId);
-        const info = secondMap.get(listing.user_id);
-        if (!info) {
-          return res.status(403).json({ error: 'not_in_your_network' });
-        }
-        chatTargetId = info.via_user_id;
+        // Alfabetik ilk aracı (getIntermediariesFor zaten sıralı döndürür)
+        chatTargetId = intermediaries[0].user_id;
       }
       isSecondDegree = true;
     }
