@@ -141,6 +141,17 @@ router.get('/me/connections', requireAuth, async (req, res, next) => {
                   AND ${genderCond}
                   AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $1)
               ) AS listing_count,
+              -- Bu tanıdığın rehberindeki Abadan kullanıcı sayısı (kendisi + bakan hariç)
+              -- Kullanıcının ilanları bu kadar kişiye ulaşır (o tanıdık üzerinden)
+              (
+                SELECT COUNT(DISTINCT u3.id)::int
+                FROM user_contacts uc3
+                JOIN users u3 ON u3.phone_hash = uc3.contact_phone_hash
+                WHERE uc3.user_id = u.id
+                  AND u3.status = 'active'
+                  AND u3.id != $1
+                  AND u3.id != u.id
+              ) AS network_size,
               -- Bu tanıdığın rehberindeki 2. derece kullanıcıların (kendi rehberimde OLMAYAN) toplam ilan sayısı
               (
                 SELECT COUNT(DISTINCT l2.id)::int
