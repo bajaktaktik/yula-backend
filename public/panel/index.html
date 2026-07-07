@@ -10,7 +10,6 @@
   <title>Abadan</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231F4E79'/><text x='50' y='68' text-anchor='middle' font-size='60' fill='white' font-family='sans-serif' font-weight='bold'>A</text></svg>" />
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
     .card { background: white; border-radius: 12px; border: 1px solid #e2e8f0; padding: 16px; }
@@ -85,7 +84,7 @@
     </ol>
 
     <div id="qr-container" class="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col items-center mb-4">
-      <canvas id="qr-canvas" class="rounded-lg bg-white p-3"></canvas>
+      <img id="qr-image" alt="QR kodu" class="rounded-lg bg-white p-3" style="width: 260px; height: 260px;" />
       <div class="text-xs text-slate-500 mt-3 text-center">Ya da manuel giriş için gizli anahtar:</div>
       <div id="secret-code" class="text-xs font-mono bg-white border border-slate-200 rounded px-3 py-2 mt-1 select-all text-center break-all"></div>
     </div>
@@ -1133,12 +1132,8 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
       currentSetupToken = result.setupToken;
       const setup = await fetchTotpSetup(currentSetupToken);
       document.getElementById('secret-code').textContent = setup.secret;
-      // QR kod üret (client-side, qrcode.js CDN)
-      const canvas = document.getElementById('qr-canvas');
-      QRCode.toCanvas(canvas, setup.otpauth_uri, {
-        width: 240, margin: 1,
-        color: { dark: '#0f172a', light: '#ffffff' },
-      });
+      // QR backend'de üretildi — data URL olarak img'ye ata
+      document.getElementById('qr-image').src = setup.qr_data_url;
       showSetup();
       return;
     }

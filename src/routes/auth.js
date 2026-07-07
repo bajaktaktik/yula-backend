@@ -2,6 +2,7 @@ const express = require('express');
 const Joi = require('joi');
 const bcrypt = require('bcrypt');
 const { authenticator } = require('otplib');
+const QRCode = require('qrcode');
 const pool = require('../db/pool');
 const { normalizePhone, rehashClientHash } = require('../utils/phone');
 const { requestOtp, verifyOtp } = require('../auth/otp');
@@ -388,9 +389,13 @@ router.post('/panel/totp-setup', async (req, res, next) => {
     const label = 'Abadan Admin (' + (u.rows[0]?.display_name || userId.slice(0, 8)) + ')';
     const issuer = 'Abadan';
     const otpauthUri = authenticator.keyuri(label, issuer, secret);
+    // QR kodu server-side üret — client CDN'e ihtiyaç yok
+    const qrDataUrl = await QRCode.toDataURL(otpauthUri, {
+      margin: 1, width: 260, color: { dark: '#0f172a', light: '#ffffff' },
+    });
 
     console.log(`[auth] totp setup started for admin=${userId}`);
-    res.json({ secret, otpauth_uri: otpauthUri });
+    res.json({ secret, otpauth_uri: otpauthUri, qr_data_url: qrDataUrl });
   } catch (err) {
     next(err);
   }
