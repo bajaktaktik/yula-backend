@@ -107,10 +107,12 @@ router.get('/i/:token', async (req, res) => {
       `SELECT s.id, s.listing_id, s.token,
               l.title, l.description, l.price, l.currency, l.location_city,
               l.admin_removed_at, l.status,
+              REGEXP_REPLACE(COALESCE(u.display_name, ''), '^\\[DEMO\\] ', '') AS seller_name,
               (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p
                WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover
        FROM listing_shares s
        JOIN listings l ON l.id = s.listing_id
+       LEFT JOIN users u ON u.id = l.user_id
        WHERE s.token = $1`,
       [req.params.token]
     );
@@ -156,6 +158,8 @@ function renderPreviewHTML(l, token) {
   const desc = escapeHtml(shortDesc);
   const cover = l.cover || '';
   const city = escapeHtml(l.location_city || '');
+  const sellerName = escapeHtml(l.seller_name || 'Abadan Kullanıcısı');
+  const sellerInitial = (l.seller_name || '?').charAt(0).toUpperCase();
   const shareUrl = (process.env.PUBLIC_BASE_URL || 'https://api.abadan.com.tr') + '/i/' + token;
 
   // App Store / Play Store link'leri
@@ -210,8 +214,8 @@ function renderPreviewHTML(l, token) {
     }
     .brand-name { font-weight: 700; font-size: 15px; }
     .cover {
-      width: 100%; aspect-ratio: 4/3; background: #e2e8f0;
-      object-fit: cover; display: block;
+      width: 100%; max-height: 500px; background: #f1f5f9;
+      object-fit: contain; display: block;
     }
     .cover-empty {
       width: 100%; aspect-ratio: 4/3; background: #e2e8f0;
@@ -299,10 +303,10 @@ function renderPreviewHTML(l, token) {
       </div>
 
       <div class="seller">
-        <div class="seller-avatar">?</div>
+        <div class="seller-avatar">${escapeHtml(sellerInitial)}</div>
         <div>
-          <div class="seller-name">Bir Abadan kullanıcısı</div>
-          <div class="seller-hint">Uygulamaya kayıt olunca satıcının kim olduğunu göreceksin</div>
+          <div class="seller-name">${sellerName}</div>
+          <div class="seller-hint">Mesaj göndermek için uygulamaya kayıt ol</div>
         </div>
       </div>
 
