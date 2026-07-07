@@ -329,6 +329,9 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+             -- Vitrin auto-loop için tüm foto thumbnails (10 tane sınır)
+             (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering)
+              FROM (SELECT thumb_url, url, ordering FROM listing_photos WHERE listing_id = l.id ORDER BY ordering LIMIT 10) p) AS all_photos,
              (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
              EXISTS(SELECT 1 FROM favorites WHERE user_id = $3 AND listing_id = l.id) AS is_favorite,
              EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $3 AND listing_id = l.id) AS is_hidden,
@@ -361,7 +364,10 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
         via_user_id: isSecond ? tierInfo.via_user_id : null,
         via_name: isSecond ? tierInfo.via_name : null,
         mutual_count: isSecond ? tierInfo.mutual_count : null,
-        photos: row.cover_photo ? [row.cover_photo] : [],
+        // Auto-loop için tüm foto'lar; boş ise cover ile fallback
+        photos: (row.all_photos && row.all_photos.length > 0)
+          ? row.all_photos
+          : (row.cover_photo ? [row.cover_photo] : []),
         photo_count: row.photo_count || 0,
       };
     });
