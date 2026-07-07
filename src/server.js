@@ -21,6 +21,7 @@ const genderChangeRoutes = require('./routes/gender-change');
 const reportRoutes = require('./routes/reports');
 const blockRoutes = require('./routes/blocks');
 const adminRoutes = require('./routes/admin');
+const sharesRoutes = require('./routes/shares');
 const { setupChat } = require('./sockets/chat');
 
 const app = express();
@@ -117,6 +118,7 @@ app.use(async (req, res, next) => {
   if (req.path.startsWith(panelPath + '/') || req.path === panelPath) return next();
   if (req.path.startsWith('/auth')) return next();
   if (req.path.startsWith('/admin')) return next();
+  if (req.path.startsWith('/i/')) return next(); // public paylaşım linki
 
   try {
     const info = await settingsService.getMaintenanceInfo();
@@ -143,6 +145,8 @@ app.use('/gender-change', genderChangeRoutes);
 app.use('/reports', reportRoutes);
 app.use('/blocks', blockRoutes);
 app.use('/admin', adminRoutes);
+// Share endpoint'leri: /listings/:id/share (auth), /shares/:token (public), /i/:token (public HTML)
+app.use('/', sharesRoutes);
 
 // Hata yakalayıcı
 app.use((err, req, res, next) => {

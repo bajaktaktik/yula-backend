@@ -442,7 +442,13 @@ router.get('/users/:id', requireAuth, requireAdmin, async (req, res, next) => {
          (SELECT COUNT(*)::int FROM reports    WHERE reporter_id = $1)                        AS reports_by,
          (SELECT COUNT(*)::int FROM user_contacts WHERE user_id = $1)                         AS contacts_count,
          (SELECT COUNT(*)::int FROM device_tokens WHERE user_id = $1)                         AS devices_count,
-         (SELECT COUNT(*)::int FROM blocks WHERE blocker_id = $1 OR blocked_id = $1)     AS blocks_count`,
+         (SELECT COUNT(*)::int FROM blocks WHERE blocker_id = $1 OR blocked_id = $1)     AS blocks_count,
+         -- Paylaşım katkısı (growth)
+         (SELECT COUNT(*)::int FROM listing_shares WHERE user_id = $1)                        AS shares_total,
+         (SELECT COALESCE(SUM(view_count), 0)::int FROM listing_shares WHERE user_id = $1)    AS shares_views,
+         (SELECT COALESCE(SUM(signup_count), 0)::int FROM listing_shares WHERE user_id = $1)  AS shares_signups,
+         -- Bu kullanıcı bir share'den geldiyse
+         (SELECT s.token FROM listing_shares s WHERE s.id = (SELECT referred_by_share_id FROM users WHERE id = $1)) AS referred_by_token`,
       [req.params.id]
     );
 
@@ -1072,6 +1078,54 @@ router.get('/system/sentry-summary', requireAuth, requireAdmin, async (req, res,
         ? `Sentry API hata: ${err.response.status}`
         : 'Sentry API\'ye ulaşılamadı: ' + err.message,
     });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// GROWTH — Share leaderboard
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/growth/top-referrers?limit=20
+// En çok kayıt getiren kullanıcılar (share → signup dönüşümü)
+router.get('/growth/top-referrers', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10) || 20, 1), 100);
+    const r = await pool.query(
+      `SELECT
+         u.id, u.display_name, u.avatar_url, u.last_active_at,
+         COUNT(s.id)::int AS shares_created,
+         COALESCE(SUM(s.view_count), 0)::int   AS total_views,
+         COALESCE(SUM(s.signup_count), 0)::int AS total_signups,
+         COALESCE(SUM(s.conversation_count), 0)::int AS total_conversations
+       FROM users u
+       JOIN listing_shares s ON s.user_id = u.id
+       GROUP BY u.id
+       HAVING SUM(s.view_count) > 0 OR SUM(s.signup_count) > 0
+       ORDER BY total_signups DESC, total_views DESC
+       LIMIT $1`,
+      [limit]
+    );
+    res.json({ referrers: r.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/growth/overview — dashboard için özet
+router.get('/growth/overview', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM listing_shares) AS total_links,
+         (SELECT COALESCE(SUM(view_count), 0)::int FROM listing_shares)   AS total_views,
+         (SELECT COALESCE(SUM(signup_count), 0)::int FROM listing_shares) AS total_signups,
+         (SELECT COUNT(*)::int FROM users WHERE referred_by_share_id IS NOT NULL) AS referred_users,
+         (SELECT COUNT(*)::int FROM listing_shares WHERE created_at > now() - interval '24 hours') AS links_24h,
+         (SELECT COALESCE(SUM(view_count), 0)::int FROM listing_shares WHERE last_viewed_at > now() - interval '24 hours') AS views_24h`
+    );
+    res.json(r.rows[0]);
+  } catch (err) {
+    next(err);
   }
 });
 

@@ -40,6 +40,29 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role) WHERE role != 'user';
 
+-- İlan paylaşım linkleri — dış paylaşım için tokenlı davet
+-- Kullanıcı ilanını WhatsApp/dışarıya paylaşırken bir token üretilir.
+-- Token = güvenli random string. Public preview sayfası (/i/:token) bu token ile açılır.
+-- Growth attribution için: linke tıklama, kayıt olma, ilana mesaj gönderme sayaçları tutulur.
+CREATE TABLE IF NOT EXISTS listing_shares (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id        UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  user_id           UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- paylaşan
+  token             TEXT NOT NULL UNIQUE,
+  view_count        INT NOT NULL DEFAULT 0,       -- kaç kez sayfa açıldı
+  signup_count      INT NOT NULL DEFAULT 0,       -- kaç kişi bu linkten kayıt oldu
+  conversation_count INT NOT NULL DEFAULT 0,      -- kaç kişi mesaj atmaya başladı
+  expires_at        TIMESTAMPTZ,                  -- opsiyonel: süreli link
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_viewed_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_listing_shares_token   ON listing_shares(token);
+CREATE INDEX IF NOT EXISTS idx_listing_shares_user    ON listing_shares(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_listing_shares_listing ON listing_shares(listing_id);
+
+-- Kayıt olan kullanıcının hangi share_token üzerinden geldiği (attribution)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_share_id UUID REFERENCES listing_shares(id) ON DELETE SET NULL;
+
 -- Sistem ayarları (bakım modu, feature flags vs.) — key/value
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,

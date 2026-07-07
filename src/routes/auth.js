@@ -38,6 +38,8 @@ const registerSchema = Joi.object({
   phoneSha256: Joi.string().length(64).required(),
   code: Joi.string().length(6).required(), // SMS doğrulama kodu — ZORUNLU
   displayName: Joi.string().max(80).required(),
+  // Growth attribution — kullanıcı share link'inden geldiyse
+  shareToken: Joi.string().max(60).optional(),
 });
 
 // POST /auth/register-pin → yeni hesap (telefon + PIN + isim + SMS kodu)
@@ -78,6 +80,29 @@ router.post('/register-pin', async (req, res, next) => {
         [phoneHash, value.displayName || null, pinHash]
       );
       user = ins.rows[0];
+    }
+
+    // Growth attribution: kullanıcı bir share link'inden geldiyse referred_by_share_id set et
+    if (value.shareToken) {
+      try {
+        const shareRow = await pool.query(
+          'SELECT id FROM listing_shares WHERE token = $1',
+          [value.shareToken]
+        );
+        if (shareRow.rows.length > 0) {
+          await pool.query(
+            'UPDATE users SET referred_by_share_id = $1 WHERE id = $2',
+            [shareRow.rows[0].id, user.id]
+          );
+          await pool.query(
+            'UPDATE listing_shares SET signup_count = signup_count + 1 WHERE id = $1',
+            [shareRow.rows[0].id]
+          );
+        }
+      } catch (e) {
+        // Attribution başarısız olsa da kayıt akışı bozulmasın
+        console.error('[register] share attribution fail:', e.message);
+      }
     }
 
     res.json({
