@@ -7,6 +7,21 @@ const pool = require('../db/pool');
 const statusCache = new Map();
 const CACHE_TTL_MS = 30_000;
 
+// last_active_at update için throttle — 5 dakikada bir DB write
+// Kullanıcı bir gün boyunca app açık tutsa da her request'te değil, 5 dk aralıkla update.
+const lastActiveUpdated = new Map(); // userId → timestamp (son ne zaman update ettik)
+const LAST_ACTIVE_THROTTLE_MS = 5 * 60 * 1000;
+
+function touchLastActive(userId) {
+  const now = Date.now();
+  const lastUpdate = lastActiveUpdated.get(userId) || 0;
+  if (now - lastUpdate < LAST_ACTIVE_THROTTLE_MS) return;
+  lastActiveUpdated.set(userId, now);
+  // Async — response'u geciktirmesin, hatası kaybolsa da olur
+  pool.query('UPDATE users SET last_active_at = now() WHERE id = $1', [userId])
+    .catch((e) => console.error('[middleware] last_active update fail:', e.message));
+}
+
 async function getUserStatus(userId) {
   const cached = statusCache.get(userId);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.status;
@@ -71,6 +86,10 @@ async function requireAuth(req, res, next) {
       // User silinmiş veya DB'de yok → token geçersiz kabul et
       return res.status(401).json({ error: 'user_not_found' });
     }
+
+    // Her yetkili istekte last_active_at güncelle (throttle ile 5 dk aralıkla)
+    // Kullanıcı sadece login-pin sırasında değil, günlük kullanımında da "canlı" sayılır.
+    touchLastActive(req.userId);
 
     next();
   } catch (err) {
