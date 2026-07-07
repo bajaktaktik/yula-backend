@@ -151,6 +151,40 @@ router.get('/i/:token', async (req, res) => {
   }
 });
 
+// GET /i/:token/cover — kapak fotoğrafını public HTTPS image olarak serve eder
+// WhatsApp/Facebook og:image bunu fetch edebilsin diye base64 data URL'i decode edip Image döner.
+router.get('/i/:token/cover', async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT COALESCE(p.thumb_url, p.url) AS cover
+       FROM listing_shares s
+       JOIN listing_photos p ON p.listing_id = s.listing_id
+       WHERE s.token = $1
+       ORDER BY p.ordering ASC
+       LIMIT 1`,
+      [req.params.token]
+    );
+    if (r.rows.length === 0 || !r.rows[0].cover) return res.status(404).end();
+    const cover = r.rows[0].cover;
+
+    // Base64 data URL ise (data:image/jpeg;base64,...) → decode + binary olarak dön
+    const m = String(cover).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (m) {
+      const buffer = Buffer.from(m[2], 'base64');
+      res.setHeader('Content-Type', m[1]);
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable'); // 1 hafta cache
+      res.setHeader('Content-Length', buffer.length);
+      return res.send(buffer);
+    }
+    // Zaten HTTPS URL ise → 302 redirect
+    if (/^https?:\/\//i.test(cover)) return res.redirect(cover);
+    return res.status(404).end();
+  } catch (err) {
+    console.error('[/i/:token/cover]', err.message);
+    res.status(500).end();
+  }
+});
+
 // ─── HTML template'ler ───
 
 function escapeHtml(s) {
@@ -174,6 +208,9 @@ function renderPreviewHTML(l, token) {
   const city = escapeHtml(l.location_city || '');
   const sellerName = escapeHtml(l.seller_name || 'Abadan Kullanıcısı');
   const sellerInitial = (l.seller_name || '?').charAt(0).toUpperCase();
+  // Kapak URL: her zaman public HTTPS endpoint (base64 ise decode, URL ise redirect)
+  const baseUrlForCover = process.env.PUBLIC_BASE_URL || 'https://api.abadan.com.tr';
+  const coverPublicUrl = cover ? `${baseUrlForCover}/i/${token}/cover` : '';
   const shareUrl = (process.env.PUBLIC_BASE_URL || 'https://api.abadan.com.tr') + '/i/' + token;
 
   // App Store / Play Store link'leri
@@ -192,15 +229,26 @@ function renderPreviewHTML(l, token) {
   <meta property="og:type" content="product" />
   <meta property="og:title" content="${title}" />
   <meta property="og:description" content="${priceStr}${city ? ' · ' + city : ''} · ${desc.slice(0, 100)}" />
-  ${cover ? `<meta property="og:image" content="${cover}" />` : ''}
+  ${coverPublicUrl ? `
+  <meta property="og:image" content="${coverPublicUrl}" />
+  <meta property="og:image:secure_url" content="${coverPublicUrl}" />
+  <meta property="og:image:type" content="image/jpeg" />
+  <meta property="og:image:width" content="800" />
+  <meta property="og:image:height" content="600" />
+  <meta property="og:image:alt" content="${title}" />
+  ` : ''}
   <meta property="og:url" content="${shareUrl}" />
   <meta property="og:site_name" content="Abadan" />
+  <meta property="og:locale" content="tr_TR" />
 
   <!-- Twitter card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="${title}" />
   <meta name="twitter:description" content="${priceStr}${city ? ' · ' + city : ''}" />
-  ${cover ? `<meta name="twitter:image" content="${cover}" />` : ''}
+  ${coverPublicUrl ? `<meta name="twitter:image" content="${coverPublicUrl}" />` : ''}
+
+  <!-- Klasik image_src (bazı platformlar) -->
+  ${coverPublicUrl ? `<link rel="image_src" href="${coverPublicUrl}" />` : ''}
 
   <!-- iOS App Universal Link -->
   <meta name="apple-itunes-app" content="app-id=6776988596, app-argument=${shareUrl}">
@@ -305,8 +353,8 @@ function renderPreviewHTML(l, token) {
       <div class="brand-name">Abadan</div>
     </div>
 
-    ${cover
-      ? `<img class="cover" src="${cover}" alt="${title}" />`
+    ${coverPublicUrl
+      ? `<img class="cover" src="${coverPublicUrl}" alt="${title}" />`
       : '<div class="cover-empty">📦</div>'}
 
     <div class="content">
