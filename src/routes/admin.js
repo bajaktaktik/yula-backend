@@ -310,7 +310,20 @@ router.get('/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
         -- Sağlıklı rehberli — 20+
         (SELECT COUNT(*)::int FROM (
            SELECT user_id FROM user_contacts GROUP BY user_id HAVING COUNT(*) >= 20
-         ) t)                                                                                                     AS users_healthy_contacts
+         ) t)                                                                                                     AS users_healthy_contacts,
+
+        -- POTANSİYEL KULLANICI HAVUZU
+        -- Rehberlerde toplam kaç FARKLI telefon var (mükerrer sayılmaz) — Abadan'ın erişebileceği potansiyel
+        (SELECT COUNT(DISTINCT contact_phone_hash)::int FROM user_contacts)                                       AS unique_contacts_pool,
+        -- Bunlardan kaçı zaten kayıtlı (mevcut kullanıcılar)
+        (SELECT COUNT(DISTINCT u.id)::int
+         FROM users u
+         WHERE u.phone_hash IN (SELECT DISTINCT contact_phone_hash FROM user_contacts))                            AS pool_registered,
+        -- Kayıtlı olmayan = ÇEKİM POTANSİYELİ (rehberlerde var ama Abadan'da yok)
+        (SELECT COUNT(*)::int FROM (
+           SELECT DISTINCT contact_phone_hash FROM user_contacts
+           WHERE contact_phone_hash NOT IN (SELECT phone_hash FROM users WHERE phone_hash IS NOT NULL)
+         ) t)                                                                                                     AS pool_unregistered
     `);
     res.json(r.rows[0]);
   } catch (err) {
@@ -474,6 +487,63 @@ router.post('/users/:id/status', requireAuth, requireAdmin, async (req, res, nex
 
     console.log(`[admin] user_status_change id=${req.params.id} status=${value.status} by=${req.userId} reason=${value.reason || ''}`);
     res.json({ ok: true, user: r.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/broadcast — seçili kullanıcılara uygulama içi bildirim gönder
+// Body: { userIds: string[], title: string, body: string }
+// Not: sadece in-app notification. Push notification istenirse ayrıca push_broadcast eklenebilir.
+const broadcastSchema = Joi.object({
+  userIds: Joi.array().items(Joi.string().uuid()).min(1).max(500).required(),
+  title: Joi.string().min(1).max(120).required(),
+  body: Joi.string().min(1).max(500).required(),
+});
+
+router.post('/broadcast', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = broadcastSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Idempotency yok — aynı bildirim tekrar gönderilebilir (admin kararına bırak)
+    // Bulk insert — payload'a title ve body'yi koy, type = 'admin_broadcast'
+    const now = new Date();
+    const rows = [];
+    const params = [];
+    value.userIds.forEach((uid, idx) => {
+      rows.push(`($${idx * 3 + 1}, 'admin_broadcast', $${idx * 3 + 2}::jsonb, $${idx * 3 + 3})`);
+      params.push(uid, JSON.stringify({ title: value.title, body: value.body, sender: 'admin' }), now);
+    });
+
+    const result = await pool.query(
+      `INSERT INTO notifications (user_id, type, payload, created_at)
+       VALUES ${rows.join(',')}
+       RETURNING id`,
+      params
+    );
+
+    console.log(`[admin] broadcast in-app sent to ${result.rowCount} users by admin=${req.userId} title="${value.title}"`);
+
+    // Push notification de gönder — arka planda, response'u geciktirmesin
+    // Cihaz token varsa ilettir; her user için ayrı çağrı (chunk'lama push service içinde)
+    (async () => {
+      const { sendToUser } = require('../services/push');
+      for (const uid of value.userIds) {
+        try {
+          await sendToUser(uid, {
+            title: value.title,
+            body: value.body,
+            data: { type: 'admin_broadcast' },
+          });
+        } catch (err) {
+          console.error(`[admin] push fail for ${uid}:`, err.message);
+        }
+      }
+      console.log(`[admin] broadcast push done for ${value.userIds.length} users`);
+    })();
+
+    res.json({ ok: true, sent: result.rowCount });
   } catch (err) {
     next(err);
   }

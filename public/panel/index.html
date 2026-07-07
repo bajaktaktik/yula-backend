@@ -393,7 +393,7 @@ async function renderDashboard() {
         <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Rehber Sağlığı</span>
         <span class="text-xs text-slate-400 italic">(network effect göstergesi)</span>
       </div>
-      <div class="grid grid-cols-4 gap-4">
+      <div class="grid grid-cols-4 gap-4 mb-4">
         ${metricCard('📇', 'Ortalama Rehber', d.avg_contacts, {
           text: 'Medyan: ' + (d.median_contacts ?? 0),
           color: 'text-slate-500',
@@ -401,6 +401,29 @@ async function renderDashboard() {
         ${lowContactsCard('❗', 'Boş Rehber (0)', d.users_no_contacts, d.users_total, '#dc2626', 'low_contacts')}
         ${lowContactsCard('⚠️', 'Az Rehber (1-4)', d.users_low_contacts, d.users_total, '#f59e0b', 'low_contacts')}
         ${lowContactsCard('✅', 'Sağlıklı (20+)', d.users_healthy_contacts, d.users_total, '#16a34a', null)}
+      </div>
+
+      <div class="mb-2 flex items-center gap-2">
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Potansiyel Havuz</span>
+        <span class="text-xs text-slate-400 italic">(rehberlerdeki mükerrer olmayan farklı telefonlar)</span>
+      </div>
+      <div class="grid grid-cols-3 gap-4">
+        ${metricCard('🌐', 'Toplam Potansiyel', d.unique_contacts_pool, {
+          text: 'Rehberlerdeki farklı telefon',
+          color: 'text-slate-500',
+        }, '#8b5cf6')}
+        ${metricCard('✅', 'Zaten Kayıtlı', d.pool_registered, {
+          text: d.unique_contacts_pool > 0
+            ? '%' + Math.round((d.pool_registered / d.unique_contacts_pool) * 100) + ' — mevcut kullanıcı'
+            : '',
+          color: 'text-green-600',
+        }, '#16a34a')}
+        ${metricCard('🎯', 'Çekilecek', d.pool_unregistered, {
+          text: d.unique_contacts_pool > 0
+            ? '%' + Math.round((d.pool_unregistered / d.unique_contacts_pool) * 100) + ' — kayıtsız hedef'
+            : '',
+          color: 'text-blue-600',
+        }, '#0ea5e9')}
       </div>
     `;
     // "Az rehberli" kartlarına click handler ekle → Kullanıcılar sekmesine göndersin
@@ -431,6 +454,13 @@ function updateReportsBadge(n) {
 // ═══════════════════════════════════════════════════════════════
 
 let usersState = { q: '', status: 'all', sortBy: 'recent' };
+let selectedUserIds = new Set(); // Toplu mesaj için seçili kullanıcılar
+let currentUsersList = []; // Son yüklenen liste (seç/hepsini seç için)
+
+const BROADCAST_PRESET = {
+  contacts:
+    'Tüm ilanları görmek istiyorsan rehber erişimine izin vermen gerekir. Teşekkürler.',
+};
 
 function usersView() {
   const c = document.getElementById('content');
@@ -453,13 +483,24 @@ function usersView() {
         `).join('')}
       </div>
     </div>
-    <div class="mb-4 flex flex-wrap gap-1 items-center">
+    <div class="mb-3 flex flex-wrap gap-1 items-center">
       <span class="text-xs text-slate-500 mr-2">Sırala:</span>
       ${sortOptions.map(o => `
         <button data-sort="${o.key}" class="sort-chip px-3 py-1.5 text-xs rounded-lg border ${usersState.sortBy === o.key ? 'bg-[#1F4E79] text-white border-[#1F4E79]' : 'bg-white border-slate-300 text-slate-700'}">
           ${o.label}
         </button>`).join('')}
     </div>
+
+    <!-- Toplu aksiyon toolbar — seçim varsa görünür -->
+    <div id="bulk-toolbar" class="hidden mb-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 flex items-center gap-3">
+      <span class="text-sm font-semibold text-blue-900"><span id="selected-count">0</span> kullanıcı seçildi</span>
+      <button id="select-all-visible" class="text-xs text-blue-700 hover:underline">Görünenlerin hepsini seç</button>
+      <button id="clear-selection" class="text-xs text-slate-600 hover:underline">Temizle</button>
+      <button id="broadcast-btn" class="ml-auto px-4 py-1.5 bg-[#1F4E79] hover:bg-[#183a5c] text-white text-sm font-semibold rounded-lg">
+        📨 Bildirim Gönder
+      </button>
+    </div>
+
     <div id="users-list" class="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div class="p-16 flex justify-center"><div class="spinner"></div></div>
     </div>
@@ -501,14 +542,41 @@ async function loadUsers() {
     if (usersState.sortBy && usersState.sortBy !== 'recent') params.set('sortBy', usersState.sortBy);
     const data = await apiJson('/admin/users?' + params.toString());
     const users = data?.users || [];
+    currentUsersList = users;
     if (users.length === 0) {
       list.innerHTML = '<div class="p-12 text-center text-slate-400">Sonuç yok</div>';
       return;
     }
     list.innerHTML = users.map(u => userRow(u)).join('');
+    // Detay tıklaması — avatar/isim alanı
     list.querySelectorAll('[data-user-id]').forEach(el => {
       el.addEventListener('click', () => openUserDetail(el.dataset.userId));
     });
+    // Checkbox — event bubble sırasında row'un click'ini iptal etmek için stopPropagation
+    list.querySelectorAll('[data-select-user]').forEach(el => {
+      el.addEventListener('click', (e) => e.stopPropagation());
+      el.addEventListener('change', (e) => {
+        const uid = e.target.dataset.selectUser;
+        if (e.target.checked) selectedUserIds.add(uid);
+        else selectedUserIds.delete(uid);
+        updateBulkToolbar();
+      });
+    });
+    updateBulkToolbar();
+
+    // Toolbar butonları
+    const selAll = document.getElementById('select-all-visible');
+    if (selAll) selAll.onclick = () => {
+      users.forEach(u => selectedUserIds.add(u.id));
+      loadUsers();
+    };
+    const clr = document.getElementById('clear-selection');
+    if (clr) clr.onclick = () => {
+      selectedUserIds.clear();
+      loadUsers();
+    };
+    const bcast = document.getElementById('broadcast-btn');
+    if (bcast) bcast.onclick = () => openBroadcastModal();
   } catch (err) {
     list.innerHTML = '<div class="p-6 text-red-600">Hata: ' + err.message + '</div>';
   }
@@ -539,26 +607,51 @@ function contactBadge(n) {
 }
 
 function userRow(u) {
+  const checked = selectedUserIds.has(u.id) ? 'checked' : '';
   return `
-    <div data-user-id="${u.id}" class="flex items-center gap-3 px-4 py-3 border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
-      <div class="w-10 h-10 rounded-full bg-[#1F4E79] text-white flex items-center justify-center font-bold text-lg flex-shrink-0">
-        ${(u.display_name || '?').charAt(0).toUpperCase()}
-      </div>
-      <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2">
-          <div class="font-semibold truncate">${u.display_name || '(isimsiz)'}</div>
-          ${statusBadge(u.status)}
+    <div data-user-row="${u.id}" class="flex items-center gap-3 px-4 py-3 border-b border-slate-100 hover:bg-slate-50">
+      <input type="checkbox" data-select-user="${u.id}" ${checked}
+        class="w-5 h-5 rounded border-slate-300 cursor-pointer flex-shrink-0" />
+      <div data-user-id="${u.id}" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
+        <div class="w-10 h-10 rounded-full bg-[#1F4E79] text-white flex items-center justify-center font-bold text-lg flex-shrink-0">
+          ${(u.display_name || '?').charAt(0).toUpperCase()}
         </div>
-        <div class="text-xs text-slate-500 flex items-center gap-3 mt-0.5">
-          <span>📦 ${u.active_listing_count}</span>
-          ${contactBadge(u.contacts_count)}
-          ${u.reports_against > 0 ? '<span class="text-red-600 font-bold">⚠️ ' + u.reports_against + '</span>' : ''}
-          ${u.location_city ? '<span>📍 ' + u.location_city + '</span>' : ''}
-          <span class="ml-auto italic">${formatDateShort(u.last_active_at)}</span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <div class="font-semibold truncate">${u.display_name || '(isimsiz)'}</div>
+            ${statusBadge(u.status)}
+          </div>
+          <div class="text-xs text-slate-500 flex items-center gap-3 mt-0.5">
+            <span>📦 ${u.active_listing_count}</span>
+            ${contactBadge(u.contacts_count)}
+            ${u.reports_against > 0 ? '<span class="text-red-600 font-bold">⚠️ ' + u.reports_against + '</span>' : ''}
+            ${u.location_city ? '<span>📍 ' + u.location_city + '</span>' : ''}
+            <span class="ml-auto italic">${formatDateShort(u.last_active_at)}</span>
+          </div>
         </div>
       </div>
     </div>
   `;
+}
+
+function updateBulkToolbar() {
+  const bar = document.getElementById('bulk-toolbar');
+  if (!bar) return;
+  const count = selectedUserIds.size;
+  if (count > 0) {
+    bar.classList.remove('hidden');
+    bar.classList.add('flex');
+    document.getElementById('selected-count').textContent = count;
+  } else {
+    bar.classList.add('hidden');
+    bar.classList.remove('flex');
+  }
+}
+
+function toggleUserSelection(userId) {
+  if (selectedUserIds.has(userId)) selectedUserIds.delete(userId);
+  else selectedUserIds.add(userId);
+  updateBulkToolbar();
 }
 
 async function openUserDetail(userId) {
@@ -659,6 +752,93 @@ function userActionButtons(user) {
     btns.push(`<button onclick="changeUserStatus('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">🔓 Yasağı Kaldır</button>`);
   }
   return btns.join('');
+}
+
+function openBroadcastModal() {
+  if (selectedUserIds.size === 0) {
+    alert('Önce en az bir kullanıcı seç.');
+    return;
+  }
+  const count = selectedUserIds.size;
+  // Seçili kullanıcıların isimlerini göster (max 8, sonra "+N daha")
+  const names = currentUsersList.filter(u => selectedUserIds.has(u.id)).map(u => u.display_name || '(isimsiz)');
+  const preview = names.slice(0, 8).join(', ') + (names.length > 8 ? ' +' + (count - 8) + ' daha' : '');
+
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">📨 Bildirim Gönder</div>
+        <div class="text-xs text-slate-500 mt-1">${count} kullanıcıya uygulama içi bildirim</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm">
+        <span class="text-slate-500 text-xs uppercase font-bold">Alıcılar:</span>
+        <div class="mt-1 text-slate-700">${preview}</div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Başlık</label>
+        <input id="bc-title" type="text" maxlength="120"
+          value="Abadan'dan Bilgi"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79]" />
+      </div>
+
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Mesaj</label>
+        <textarea id="bc-body" rows="4" maxlength="500"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79] resize-none">${BROADCAST_PRESET.contacts}</textarea>
+        <div class="flex items-center justify-between mt-2">
+          <div class="text-xs text-slate-500">Hazır şablonlar:</div>
+          <div class="flex gap-1">
+            <button type="button" onclick="document.getElementById('bc-body').value='${BROADCAST_PRESET.contacts.replace(/'/g, "\\'")}'"
+              class="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded">Rehber izni</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="text-xs text-slate-500 italic">
+        Bu bildirim kullanıcıların "Bildirimler" ekranında görünür. Push notification olarak da gönderilir (cihazlarda kayıtlı token varsa).
+      </div>
+    </div>
+
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="sendBroadcast()" id="send-broadcast-btn" class="flex-1 px-4 py-3 rounded-lg bg-[#1F4E79] text-white font-semibold hover:bg-[#183a5c]">
+        📨 Gönder
+      </button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function sendBroadcast() {
+  const title = document.getElementById('bc-title').value.trim();
+  const body = document.getElementById('bc-body').value.trim();
+  if (!title || !body) {
+    alert('Başlık ve mesaj zorunlu.');
+    return;
+  }
+  const btn = document.getElementById('send-broadcast-btn');
+  btn.disabled = true;
+  btn.textContent = 'Gönderiliyor...';
+  try {
+    const userIds = Array.from(selectedUserIds);
+    const result = await apiJson('/admin/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({ userIds, title, body }),
+    });
+    closeModal();
+    selectedUserIds.clear();
+    updateBulkToolbar();
+    loadUsers();
+    alert('✓ ' + (result?.sent ?? 0) + ' kullanıcıya gönderildi.');
+  } catch (err) {
+    alert('Hata: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = '📨 Gönder';
+  }
 }
 
 async function changeUserStatus(userId, status, name) {
