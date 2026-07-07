@@ -11,6 +11,28 @@ const expo = new Expo();
  * @param {string} userId  - bildirim gidecek kullanıcı
  * @param {object} payload - { title, body, data }
  */
+async function logPush({ userId, payload, tokens_count = 0, ok_count = 0, err_count = 0, status, error }) {
+  try {
+    await pool.query(
+      `INSERT INTO push_log (user_id, type, title, body_short, tokens_count, ok_count, err_count, status, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        userId,
+        payload?.data?.type || null,
+        payload?.title || null,
+        (payload?.body || '').slice(0, 100),
+        tokens_count,
+        ok_count,
+        err_count,
+        status,
+        error || null,
+      ]
+    );
+  } catch (e) {
+    console.error('[push] log fail:', e.message);
+  }
+}
+
 async function sendToUser(userId, payload) {
   // PII korumalı log: title/body yazılmaz, sadece user_id + payload type
   console.log(`[push] sendToUser user=${userId} type=${payload?.data?.type || 'generic'}`);
@@ -21,6 +43,7 @@ async function sendToUser(userId, payload) {
   console.log(`[push] DB'den bulunan token sayısı: ${rows.length}`);
   if (rows.length === 0) {
     console.warn(`[push] TOKEN YOK — user=${userId} cihaz kaydetmemiş`);
+    await logPush({ userId, payload, status: 'no_tokens' });
     return;
   }
 
@@ -83,6 +106,19 @@ async function sendToUser(userId, payload) {
   const okCount = tickets.filter((t) => t.status === 'ok').length;
   const errCount = tickets.filter((t) => t.status === 'error').length;
   console.log(`[push] ticket sonuç: ${okCount} ok, ${errCount} error`);
+
+  // Log — push_log tablosuna kaydet
+  const status = errCount === 0 ? 'sent' : (okCount === 0 ? 'failed' : 'partial');
+  const firstErr = tickets.find((t) => t.status === 'error');
+  await logPush({
+    userId,
+    payload,
+    tokens_count: messages.length,
+    ok_count: okCount,
+    err_count: errCount,
+    status,
+    error: firstErr ? firstErr.message?.slice(0, 300) : null,
+  });
 
   // Hatalı ticket detaylarını logla
   tickets.forEach((t, i) => {

@@ -103,6 +103,37 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_listings_featured ON listings(featured_until DESC) WHERE featured_until IS NOT NULL;
 
+-- Sistem izleme: SMS gönderim logu (PII korumalı — telefon maskeli)
+CREATE TABLE IF NOT EXISTS sms_log (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider     TEXT NOT NULL,           -- 'twilio' | 'netgsm'
+  phone_masked TEXT NOT NULL,           -- +90555*****67
+  purpose      TEXT,                    -- 'otp' | 'reset_pin' | 'admin'
+  status       TEXT NOT NULL,           -- 'sent' | 'failed'
+  error        TEXT,
+  duration_ms  INT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sms_log_created ON sms_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sms_log_status  ON sms_log(status, created_at DESC);
+
+-- Sistem izleme: Push notification logu
+CREATE TABLE IF NOT EXISTS push_log (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      UUID REFERENCES users(id) ON DELETE SET NULL,
+  type         TEXT,                    -- 'admin_broadcast' | 'price_change' | 'message' | 'gender_change_request' vs
+  title        TEXT,
+  body_short   TEXT,                    -- ilk 100 char (privacy + storage)
+  tokens_count INT DEFAULT 0,           -- kaç cihaza gönderildi
+  ok_count     INT DEFAULT 0,           -- başarılı ticket sayısı
+  err_count    INT DEFAULT 0,           -- hata ticket sayısı
+  status       TEXT NOT NULL,           -- 'sent' | 'partial' | 'failed' | 'no_tokens'
+  error        TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_push_log_created ON push_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_push_log_user    ON push_log(user_id, created_at DESC);
+
 -- Yasak kelime filtresi — yeni ilan açılırken title+description regex ile taranır
 CREATE TABLE IF NOT EXISTS banned_words (
   id           SERIAL PRIMARY KEY,

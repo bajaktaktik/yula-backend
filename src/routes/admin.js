@@ -890,4 +890,173 @@ router.delete('/banned-words/:id', requireAuth, requireAdmin, async (req, res, n
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// SİSTEM İZLEME
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/system/sms-log?limit=100
+router.get('/system/sms-log', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 500);
+    const r = await pool.query(
+      `SELECT id, provider, phone_masked, purpose, status, error, duration_ms, created_at
+       FROM sms_log
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    // Özet istatistikler (son 24 saat)
+    const stats = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total_24h,
+         COUNT(*) FILTER (WHERE status = 'sent')::int   AS sent_24h,
+         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_24h,
+         ROUND(AVG(duration_ms))::int AS avg_ms
+       FROM sms_log WHERE created_at > now() - interval '24 hours'`
+    );
+    res.json({ logs: r.rows, stats: stats.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/system/push-log?limit=100
+router.get('/system/push-log', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 500);
+    const r = await pool.query(
+      `SELECT p.id, p.type, p.title, p.body_short, p.tokens_count, p.ok_count, p.err_count,
+              p.status, p.error, p.created_at,
+              u.display_name AS user_name
+       FROM push_log p
+       LEFT JOIN users u ON u.id = p.user_id
+       ORDER BY p.created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    const stats = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total_24h,
+         SUM(tokens_count)::int AS tokens_24h,
+         SUM(ok_count)::int     AS ok_24h,
+         SUM(err_count)::int    AS err_24h,
+         COUNT(*) FILTER (WHERE status = 'no_tokens')::int AS no_tokens_24h
+       FROM push_log WHERE created_at > now() - interval '24 hours'`
+    );
+    res.json({ logs: r.rows, stats: stats.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/system/api-metrics — in-memory summary + recent + slow endpoints
+router.get('/system/api-metrics', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const apiMetrics = require('../services/api-metrics');
+    res.json({
+      overall: apiMetrics.overall(),
+      slow_endpoints: apiMetrics.summary(30),
+      recent: apiMetrics.recent(50),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/system/server-info — process + DB pool
+router.get('/system/server-info', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const mem = process.memoryUsage();
+    const uptimeSec = Math.round(process.uptime());
+    const info = {
+      node_version: process.version,
+      env: process.env.NODE_ENV || 'development',
+      uptime_seconds: uptimeSec,
+      uptime_human: humanUptime(uptimeSec),
+      memory_mb: {
+        rss: Math.round(mem.rss / 1024 / 1024),
+        heap_used: Math.round(mem.heapUsed / 1024 / 1024),
+        heap_total: Math.round(mem.heapTotal / 1024 / 1024),
+        external: Math.round(mem.external / 1024 / 1024),
+      },
+      db_pool: {
+        total: pool.totalCount,
+        idle: pool.idleCount,
+        waiting: pool.waitingCount,
+      },
+    };
+
+    // DB size
+    try {
+      const dbSize = await pool.query('SELECT pg_database_size(current_database()) AS bytes');
+      info.db_size_mb = Math.round(Number(dbSize.rows[0].bytes) / 1024 / 1024);
+    } catch {}
+
+    res.json(info);
+  } catch (err) {
+    next(err);
+  }
+});
+
+function humanUptime(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}g ${h}s ${m}dk`;
+  if (h > 0) return `${h}s ${m}dk`;
+  return `${m}dk`;
+}
+
+// GET /admin/system/sentry-summary — Sentry API (env token varsa)
+// Env: SENTRY_AUTH_TOKEN + SENTRY_ORG + SENTRY_PROJECT
+router.get('/system/sentry-summary', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const token = process.env.SENTRY_AUTH_TOKEN;
+    const org = process.env.SENTRY_ORG;
+    const project = process.env.SENTRY_PROJECT;
+    if (!token || !org || !project) {
+      return res.json({
+        configured: false,
+        message: 'Sentry entegre değil. Railway env: SENTRY_AUTH_TOKEN + SENTRY_ORG + SENTRY_PROJECT ekle.',
+      });
+    }
+
+    const axios = require('axios');
+    // Son 24 saatte açılan issue'lar — en son 20 tanesi
+    const url = `https://sentry.io/api/0/projects/${org}/${project}/issues/?statsPeriod=24h&limit=20&query=is:unresolved`;
+    const r = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 8000,
+    });
+    const issues = r.data || [];
+    // Toplam event sayısı
+    const totalEvents = issues.reduce((sum, it) => sum + (parseInt(it.count, 10) || 0), 0);
+    const summary = issues.slice(0, 10).map((it) => ({
+      id: it.id,
+      title: it.title,
+      culprit: it.culprit,
+      level: it.level,
+      count: parseInt(it.count, 10) || 0,
+      users_affected: it.userCount || 0,
+      last_seen: it.lastSeen,
+      permalink: it.permalink,
+    }));
+
+    res.json({
+      configured: true,
+      issues_24h: issues.length,
+      total_events_24h: totalEvents,
+      top_issues: summary,
+    });
+  } catch (err) {
+    console.error('[admin] sentry summary fail:', err.message);
+    res.json({
+      configured: true,
+      error: err.response?.status
+        ? `Sentry API hata: ${err.response.status}`
+        : 'Sentry API\'ye ulaşılamadı: ' + err.message,
+    });
+  }
+});
+
 module.exports = router;

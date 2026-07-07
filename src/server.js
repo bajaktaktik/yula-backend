@@ -42,6 +42,10 @@ app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(morgan('dev'));
 
+// API response time izleme — her request kayıt altına alınır (in-memory ring buffer)
+const apiMetrics = require('./services/api-metrics');
+app.use(apiMetrics.middleware);
+
 // Genel rate limit
 app.use(rateLimit({ windowMs: 60 * 1000, max: 100 }));
 
