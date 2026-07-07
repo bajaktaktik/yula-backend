@@ -546,6 +546,30 @@ function updateReportsBadge(n) {
 let usersState = { q: '', status: 'all', sortBy: 'recent' };
 let selectedUserIds = new Set(); // Toplu mesaj için seçili kullanıcılar
 let currentUsersList = []; // Son yüklenen liste (seç/hepsini seç için)
+// Client-side tablo sıralaması (backend sıralamasından bağımsız)
+let tableSort = { key: null, dir: 'desc' };
+
+// Tablo sütunları — key: user field, label: başlık, num: sayısal mı, w: min genişlik
+const USER_COLUMNS = [
+  { key: 'display_name',        label: 'İsim',         num: false, w: '150px' },
+  { key: 'status',              label: 'Durum',        num: false, w: '80px' },
+  { key: 'active_listing_count',label: 'Aktif İlan',   num: true,  w: '80px' },
+  { key: 'listings_total',      label: 'Toplam İlan',  num: true,  w: '80px' },
+  { key: 'messages_sent',       label: 'Mesaj',        num: true,  w: '70px' },
+  { key: 'conversations_count', label: 'Sohbet',       num: true,  w: '70px' },
+  { key: 'contacts_count',      label: 'Rehberde',     num: true,  w: '80px' },
+  { key: 'reports_against',     label: 'Aleyhine Şik.',num: true,  w: '90px' },
+  { key: 'reports_by',          label: 'Şikayet Etti', num: true,  w: '90px' },
+  { key: 'shares_total',        label: '🔗 Link',       num: true,  w: '70px' },
+  { key: 'shares_views',        label: '👁️ Görnt.',   num: true,  w: '80px' },
+  { key: 'shares_signups',      label: '✨ Getirdiği', num: true,  w: '90px' },
+  { key: 'devices_count',       label: 'Cihaz',        num: true,  w: '60px' },
+  { key: 'blocks_count',        label: 'Engel',        num: true,  w: '60px' },
+  { key: 'location_city',       label: 'Şehir',        num: false, w: '100px' },
+  { key: 'gender',              label: 'Cins.',        num: false, w: '60px' },
+  { key: 'created_at',          label: 'Kayıt',        num: false, w: '100px' },
+  { key: 'last_active_at',      label: 'Son Aktif',    num: false, w: '100px' },
+];
 
 const BROADCAST_PRESET = {
   contacts:
@@ -591,7 +615,7 @@ function usersView() {
       </button>
     </div>
 
-    <div id="users-list" class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <div id="users-list" class="bg-white rounded-xl border border-slate-200 overflow-auto max-h-[calc(100vh-260px)]">
       <div class="p-16 flex justify-center"><div class="spinner"></div></div>
     </div>
   `;
@@ -637,33 +661,20 @@ async function loadUsers() {
       list.innerHTML = '<div class="p-12 text-center text-slate-400">Sonuç yok</div>';
       return;
     }
-    list.innerHTML = users.map(u => userRow(u)).join('');
-    // Detay tıklaması — avatar/isim alanı
-    list.querySelectorAll('[data-user-id]').forEach(el => {
-      el.addEventListener('click', () => openUserDetail(el.dataset.userId));
-    });
-    // Checkbox — event bubble sırasında row'un click'ini iptal etmek için stopPropagation
-    list.querySelectorAll('[data-select-user]').forEach(el => {
-      el.addEventListener('click', (e) => e.stopPropagation());
-      el.addEventListener('change', (e) => {
-        const uid = e.target.dataset.selectUser;
-        if (e.target.checked) selectedUserIds.add(uid);
-        else selectedUserIds.delete(uid);
-        updateBulkToolbar();
-      });
-    });
-    updateBulkToolbar();
+    renderUsersTable(users);
 
     // Toolbar butonları
     const selAll = document.getElementById('select-all-visible');
     if (selAll) selAll.onclick = () => {
       users.forEach(u => selectedUserIds.add(u.id));
-      loadUsers();
+      renderUsersTable(currentUsersList);
+      updateBulkToolbar();
     };
     const clr = document.getElementById('clear-selection');
     if (clr) clr.onclick = () => {
       selectedUserIds.clear();
-      loadUsers();
+      renderUsersTable(currentUsersList);
+      updateBulkToolbar();
     };
     const bcast = document.getElementById('broadcast-btn');
     if (bcast) bcast.onclick = () => openBroadcastModal();
@@ -694,6 +705,166 @@ function contactBadge(n) {
   if (n < 5) return '<span class="text-orange-600 font-bold">📇 ' + n + '</span>';
   if (n < 20) return '<span class="text-yellow-700">📇 ' + n + '</span>';
   return '<span>📇 ' + n + '</span>';
+}
+
+// Client-side sıralama — tıklanan sütuna göre listeyi yeniden düzenler
+function sortUsers(users) {
+  if (!tableSort.key) return users;
+  const key = tableSort.key;
+  const dir = tableSort.dir === 'asc' ? 1 : -1;
+  const arr = [...users];
+  arr.sort((a, b) => {
+    const av = a[key];
+    const bv = b[key];
+    // null/undefined'ları sona at
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av).localeCompare(String(bv), 'tr') * dir;
+  });
+  return arr;
+}
+
+// Sütun tıklaması — sıralama durumunu değiştir
+function onSortClick(key) {
+  if (tableSort.key === key) {
+    // Aynı sütun: yön değiştir; 3. tıkta iptal
+    if (tableSort.dir === 'desc') tableSort.dir = 'asc';
+    else { tableSort.key = null; }
+  } else {
+    tableSort.key = key;
+    tableSort.dir = 'desc'; // sayısal sütunlar için mantıklı default
+  }
+  renderUsersTable(currentUsersList);
+}
+
+function sortIcon(colKey) {
+  if (tableSort.key !== colKey) return '<span class="text-slate-300">⇅</span>';
+  return tableSort.dir === 'desc'
+    ? '<span class="text-[#1F4E79] font-bold">▼</span>'
+    : '<span class="text-[#1F4E79] font-bold">▲</span>';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '<span class="text-slate-300">—</span>';
+  const d = new Date(iso);
+  return d.toLocaleDateString('tr-TR');
+}
+
+function fmtNum(n, colored = true) {
+  if (n == null || n === 0) return '<span class="text-slate-300">—</span>';
+  if (colored && n > 0) return '<b>' + n.toLocaleString('tr-TR') + '</b>';
+  return n.toLocaleString('tr-TR');
+}
+
+function renderUsersTable(users) {
+  const list = document.getElementById('users-list');
+  const sorted = sortUsers(users);
+
+  // İlk sütun (İsim) sticky sol olarak render — kalanlar normal
+  const nonNameColumns = USER_COLUMNS.filter(c => c.key !== 'display_name');
+  const headerCols = nonNameColumns.map(c => `
+    <th onclick="onSortClick('${c.key}')"
+        class="sticky top-0 bg-slate-100 border-b-2 border-slate-300 text-xs font-bold text-slate-700 uppercase whitespace-nowrap px-2 py-2 cursor-pointer select-none hover:bg-slate-200 ${c.num ? 'text-right' : 'text-left'}"
+        style="min-width: ${c.w};">
+      <div class="flex items-center gap-1 ${c.num ? 'justify-end' : 'justify-start'}">
+        <span>${c.label}</span>
+        ${sortIcon(c.key)}
+      </div>
+    </th>`).join('');
+
+  const rows = sorted.map(u => {
+    const checked = selectedUserIds.has(u.id) ? 'checked' : '';
+    const statusHtml = statusBadge(u.status);
+    const roleBadge = u.role === 'admin' ? '<span class="text-xs bg-purple-100 text-purple-800 px-1.5 rounded-full font-bold ml-1">A</span>' : '';
+    // Aleyhine şikayet varsa hafif kırmızı satır
+    const rowClass = u.reports_against > 0 ? 'hover:bg-red-50/60' : 'hover:bg-slate-50';
+
+    return `
+      <tr class="border-b border-slate-100 ${rowClass}">
+        <!-- İsim (sticky sol) + avatar + checkbox -->
+        <td class="sticky left-0 bg-white z-10 px-2 py-1.5 border-r border-slate-200" style="min-width: 180px;">
+          <div class="flex items-center gap-2">
+            <input type="checkbox" data-select-user="${u.id}" ${checked}
+              class="w-4 h-4 flex-shrink-0 cursor-pointer" />
+            <div class="w-7 h-7 rounded-full bg-[#1F4E79] text-white flex items-center justify-center font-bold text-xs flex-shrink-0">
+              ${(u.display_name || '?').charAt(0).toUpperCase()}
+            </div>
+            <button onclick="openUserDetail('${u.id}')"
+              class="text-sm font-semibold text-[#1F4E79] hover:underline truncate text-left" style="max-width: 130px;">
+              ${u.display_name || '(isimsiz)'}
+            </button>
+            ${roleBadge}
+          </div>
+        </td>
+        <!-- Durum -->
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${statusHtml}</td>
+        <!-- Aktif İlan -->
+        <td class="px-2 py-1.5 text-sm text-right ${u.active_listing_count > 0 ? 'text-green-700' : ''}">${fmtNum(u.active_listing_count)}</td>
+        <!-- Toplam İlan -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.listings_total)}</td>
+        <!-- Mesaj -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.messages_sent)}</td>
+        <!-- Sohbet -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.conversations_count)}</td>
+        <!-- Rehberde (renkli) -->
+        <td class="px-2 py-1.5 text-sm text-right">
+          ${u.contacts_count === 0 ? '<span class="text-red-600 font-bold">0</span>' :
+            u.contacts_count < 5 ? '<span class="text-orange-600 font-bold">' + u.contacts_count + '</span>' :
+            u.contacts_count < 20 ? '<span class="text-yellow-700">' + u.contacts_count + '</span>' :
+            '<b>' + u.contacts_count + '</b>'}
+        </td>
+        <!-- Aleyhine Şikayet (kırmızı) -->
+        <td class="px-2 py-1.5 text-sm text-right ${u.reports_against > 0 ? 'text-red-700 font-bold' : ''}">${fmtNum(u.reports_against)}</td>
+        <!-- Şikayet Etti -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.reports_by)}</td>
+        <!-- Paylaşım linkleri -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.shares_total)}</td>
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.shares_views)}</td>
+        <td class="px-2 py-1.5 text-sm text-right ${u.shares_signups > 0 ? 'text-green-700 font-bold' : ''}">${fmtNum(u.shares_signups)}</td>
+        <!-- Cihaz -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.devices_count)}</td>
+        <!-- Engel -->
+        <td class="px-2 py-1.5 text-sm text-right">${fmtNum(u.blocks_count)}</td>
+        <!-- Şehir -->
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${u.location_city || '<span class="text-slate-300">—</span>'}</td>
+        <!-- Cinsiyet -->
+        <td class="px-2 py-1.5 text-xs text-center">${u.gender === 'female' ? '<span class="text-pink-600">♀</span>' : u.gender === 'male' ? '<span class="text-blue-600">♂</span>' : '<span class="text-slate-300">—</span>'}</td>
+        <!-- Kayıt -->
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap">${fmtDate(u.created_at)}</td>
+        <!-- Son Aktif -->
+        <td class="px-2 py-1.5 text-xs whitespace-nowrap ${!u.last_active_at ? 'text-slate-300' : ''}">${fmtDate(u.last_active_at)}</td>
+      </tr>`;
+  }).join('');
+
+  list.innerHTML = `
+    <table class="w-full text-sm border-collapse">
+      <thead>
+        <tr>
+          <th class="sticky top-0 left-0 z-20 bg-slate-100 border-b-2 border-r-2 border-slate-300 text-xs font-bold text-slate-700 uppercase px-2 py-2 text-left" style="min-width: 180px;">
+            <div class="flex items-center gap-1 cursor-pointer select-none hover:text-[#1F4E79]" onclick="onSortClick('display_name')">
+              İsim ${sortIcon('display_name')}
+            </div>
+          </th>
+          ${headerCols}
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  // Checkbox event listener'lar
+  list.querySelectorAll('[data-select-user]').forEach(el => {
+    el.addEventListener('click', (e) => e.stopPropagation());
+    el.addEventListener('change', (e) => {
+      const uid = e.target.dataset.selectUser;
+      if (e.target.checked) selectedUserIds.add(uid);
+      else selectedUserIds.delete(uid);
+      updateBulkToolbar();
+    });
+  });
+  updateBulkToolbar();
 }
 
 function userRow(u) {

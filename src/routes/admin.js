@@ -402,11 +402,21 @@ router.get('/users', requireAuth, requireAdmin, async (req, res, next) => {
 
     const r = await pool.query(
       `SELECT
-         u.id, u.display_name, u.avatar_url, u.gender, u.location_city, u.status,
-         u.created_at, u.last_active_at,
-         (SELECT COUNT(*)::int FROM listings WHERE user_id = u.id AND status = 'active') AS active_listing_count,
+         u.id, u.display_name, u.avatar_url, u.gender, u.location_city, u.status, u.role,
+         u.created_at, u.last_active_at, u.onboarded_at,
+         (SELECT COUNT(*)::int FROM listings WHERE user_id = u.id AND status = 'active')     AS active_listing_count,
+         (SELECT COUNT(*)::int FROM listings WHERE user_id = u.id)                            AS listings_total,
+         (SELECT COUNT(*)::int FROM messages WHERE sender_id = u.id)                          AS messages_sent,
+         (SELECT COUNT(DISTINCT c.id)::int FROM conversations c
+           WHERE c.buyer_id = u.id OR c.seller_id = u.id)                                     AS conversations_count,
          (SELECT COUNT(*)::int FROM reports  WHERE target_type = 'user' AND target_id = u.id) AS reports_against,
-         (SELECT COUNT(*)::int FROM user_contacts WHERE user_id = u.id) AS contacts_count
+         (SELECT COUNT(*)::int FROM reports  WHERE reporter_id = u.id)                        AS reports_by,
+         (SELECT COUNT(*)::int FROM user_contacts WHERE user_id = u.id)                       AS contacts_count,
+         (SELECT COUNT(*)::int FROM device_tokens WHERE user_id = u.id)                       AS devices_count,
+         (SELECT COUNT(*)::int FROM blocks WHERE blocker_id = u.id OR blocked_id = u.id)      AS blocks_count,
+         (SELECT COUNT(*)::int FROM listing_shares WHERE user_id = u.id)                      AS shares_total,
+         (SELECT COALESCE(SUM(view_count), 0)::int FROM listing_shares WHERE user_id = u.id)  AS shares_views,
+         (SELECT COALESCE(SUM(signup_count), 0)::int FROM listing_shares WHERE user_id = u.id) AS shares_signups
        FROM users u
        ${whereSql}
        ORDER BY ${orderBy}
