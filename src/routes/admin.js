@@ -651,4 +651,243 @@ router.post('/broadcast', requireAuth, requireAdmin, async (req, res, next) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// İLAN MODERASYONU
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/listings — filtre + arama + sayfalama
+// Query: ?q= &category= &city= &status= &sellerId= &limit= &offset=
+router.get('/listings', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const category = String(req.query.category || '').trim();
+    const city = String(req.query.city || '').trim();
+    const status = String(req.query.status || 'all');
+    const sellerId = String(req.query.sellerId || '').trim();
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
+
+    const conds = [];
+    const params = [];
+
+    if (q) {
+      params.push(q);
+      conds.push(`(l.title ILIKE '%' || $${params.length} || '%' OR l.description ILIKE '%' || $${params.length} || '%')`);
+    }
+    if (category) {
+      params.push(parseInt(category, 10));
+      conds.push(`l.category_id = $${params.length}`);
+    }
+    if (city) {
+      params.push(city);
+      conds.push(`l.location_city ILIKE '%' || $${params.length} || '%'`);
+    }
+    if (status === 'active') conds.push(`l.status = 'active' AND l.admin_removed_at IS NULL`);
+    else if (status === 'sold') conds.push(`l.status = 'sold'`);
+    else if (status === 'removed') conds.push(`l.admin_removed_at IS NOT NULL`);
+    else if (status === 'featured') conds.push(`l.featured_until > now()`);
+    // 'all' → tümü
+
+    if (sellerId) {
+      params.push(sellerId);
+      conds.push(`l.user_id = $${params.length}`);
+    }
+    const whereSql = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+
+    params.push(limit);
+    const limitIdx = params.length;
+    params.push(offset);
+    const offsetIdx = params.length;
+
+    const r = await pool.query(
+      `SELECT l.id, l.title, l.price, l.currency, l.status, l.location_city,
+              l.created_at, l.admin_removed_at, l.admin_removed_reason, l.featured_until,
+              l.user_id, u.display_name AS seller_name,
+              c.name AS category_name,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p
+               WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT COUNT(*)::int FROM listing_photos WHERE listing_id = l.id) AS photo_count,
+              (SELECT COUNT(*)::int FROM reports WHERE target_type = 'listing' AND target_id = l.id) AS reports_count
+       FROM listings l
+       LEFT JOIN users u ON u.id = l.user_id
+       LEFT JOIN categories c ON c.id = l.category_id
+       ${whereSql}
+       ORDER BY (l.featured_until > now())::int DESC, l.created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
+    );
+
+    res.json({ listings: r.rows, count: r.rowCount });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/listings/:id — detay (foto listesi, satıcı, şikayet sayısı vb.)
+router.get('/listings/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const l = await pool.query(
+      `SELECT l.id, l.title, l.description, l.price, l.currency, l.status,
+              l.location_city, l.location_district, l.category_id, l.created_at, l.updated_at,
+              l.admin_removed_at, l.admin_removed_reason, l.featured_until,
+              l.user_id, u.display_name AS seller_name, u.avatar_url AS seller_avatar,
+              u.status AS seller_status,
+              c.name AS category_name
+       FROM listings l
+       LEFT JOIN users u ON u.id = l.user_id
+       LEFT JOIN categories c ON c.id = l.category_id
+       WHERE l.id = $1`,
+      [req.params.id]
+    );
+    if (l.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const photos = await pool.query(
+      `SELECT id, url, thumb_url, ordering FROM listing_photos
+       WHERE listing_id = $1 ORDER BY ordering`,
+      [req.params.id]
+    );
+
+    const reports = await pool.query(
+      `SELECT id, reason, status, created_at FROM reports
+       WHERE target_type = 'listing' AND target_id = $1
+       ORDER BY created_at DESC LIMIT 20`,
+      [req.params.id]
+    );
+
+    res.json({ listing: l.rows[0], photos: photos.rows, reports: reports.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/listings/:id/action — remove | restore | feature | delete
+// Reason zorunlu, audit log'a yazılır
+const listingActionSchema = Joi.object({
+  action: Joi.string().valid('remove', 'restore', 'feature', 'unfeature', 'delete').required(),
+  reason: Joi.string().min(3).max(500).required(),
+  feature_hours: Joi.number().integer().min(1).max(24 * 90).allow(null).optional(), // sadece feature için
+});
+
+router.post('/listings/:id/action', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = listingActionSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const l = await pool.query('SELECT id, user_id, title FROM listings WHERE id = $1', [req.params.id]);
+    if (l.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const listing = l.rows[0];
+
+    let auditAction = value.action;
+    if (value.action === 'remove') {
+      await pool.query(
+        `UPDATE listings SET admin_removed_at = now(), admin_removed_reason = $2 WHERE id = $1`,
+        [req.params.id, value.reason]
+      );
+      auditAction = 'listing_remove';
+    } else if (value.action === 'restore') {
+      await pool.query(
+        `UPDATE listings SET admin_removed_at = NULL, admin_removed_reason = NULL WHERE id = $1`,
+        [req.params.id]
+      );
+      auditAction = 'listing_restore';
+    } else if (value.action === 'feature') {
+      const hours = value.feature_hours || 24 * 7;
+      const until = new Date(Date.now() + hours * 3600 * 1000);
+      await pool.query('UPDATE listings SET featured_until = $2 WHERE id = $1', [req.params.id, until]);
+      auditAction = 'listing_feature';
+    } else if (value.action === 'unfeature') {
+      await pool.query('UPDATE listings SET featured_until = NULL WHERE id = $1', [req.params.id]);
+      auditAction = 'listing_unfeature';
+    } else if (value.action === 'delete') {
+      // KVKK / kalıcı silme — foto, konuşma vs. cascade
+      await pool.query('DELETE FROM listings WHERE id = $1', [req.params.id]);
+      auditAction = 'listing_delete';
+    }
+
+    // Audit log
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        req.userId,
+        listing.user_id,
+        auditAction,
+        value.reason,
+        JSON.stringify({
+          listing_id: listing.id,
+          listing_title: listing.title,
+          feature_hours: value.feature_hours || null,
+        }),
+      ]
+    );
+
+    console.log(`[admin] listing_${value.action} id=${listing.id} by=${req.userId}`);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// YASAK KELİME FİLTRESİ
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/banned-words
+router.get('/banned-words', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT bw.id, bw.pattern, bw.is_regex, bw.category, bw.message, bw.created_at,
+              u.display_name AS added_by_name
+       FROM banned_words bw
+       LEFT JOIN users u ON u.id = bw.added_by
+       ORDER BY bw.created_at DESC`
+    );
+    res.json({ words: r.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/banned-words
+const bannedWordSchema = Joi.object({
+  pattern: Joi.string().min(1).max(200).required(),
+  is_regex: Joi.boolean().default(false),
+  category: Joi.string().max(50).allow('').optional(),
+  message: Joi.string().max(200).allow('').optional(),
+});
+
+router.post('/banned-words', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = bannedWordSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    // is_regex ise pattern'in geçerli bir regex olduğunu doğrula
+    if (value.is_regex) {
+      try { new RegExp(value.pattern, 'i'); }
+      catch { return res.status(400).json({ error: 'invalid_regex', message: 'Geçersiz regex.' }); }
+    }
+
+    const r = await pool.query(
+      `INSERT INTO banned_words (pattern, is_regex, category, message, added_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [value.pattern, value.is_regex, value.category || null, value.message || null, req.userId]
+    );
+    require('../services/banned-words').invalidateCache();
+    res.json({ word: r.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/banned-words/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query('DELETE FROM banned_words WHERE id = $1', [req.params.id]);
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
+    require('../services/banned-words').invalidateCache();
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

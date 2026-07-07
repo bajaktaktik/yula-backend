@@ -96,6 +96,24 @@ CREATE INDEX IF NOT EXISTS idx_listings_category ON listings(category_id);
 -- Migration: mevcut tabloya kolon ekle
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS restricted_to_gender TEXT;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS is_negotiable BOOLEAN DEFAULT FALSE;
+-- Admin moderasyon: manuel kaldırma (soft delete — kullanıcı ilanı görür ama edit edemez)
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_at TIMESTAMPTZ;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
+-- Admin öne çıkarma — bu tarih geçince otomatik normal ilan
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_listings_featured ON listings(featured_until DESC) WHERE featured_until IS NOT NULL;
+
+-- Yasak kelime filtresi — yeni ilan açılırken title+description regex ile taranır
+CREATE TABLE IF NOT EXISTS banned_words (
+  id           SERIAL PRIMARY KEY,
+  pattern      TEXT NOT NULL,           -- regex veya düz metin (aşağıda `is_regex` bayrağı)
+  is_regex     BOOLEAN NOT NULL DEFAULT FALSE,
+  category     TEXT,                    -- 'iletisim' | 'yasadisi' | 'dolandiricilik' | 'spam' | serbest
+  message      TEXT,                    -- kullanıcıya gösterilecek özel mesaj (opsiyonel)
+  added_by     UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_banned_words_pattern ON banned_words(pattern);
 
 -- Ilan fotograflari
 CREATE TABLE IF NOT EXISTS listing_photos (

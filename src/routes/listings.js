@@ -128,6 +128,7 @@ router.get('/', requireAuth, async (req, res, next) => {
     const filters = [
       'l.user_id = ANY($1::uuid[])',
       "l.status = 'active'",
+      'l.admin_removed_at IS NULL',
       // Cinsiyet kısıtı — kullanıcı kendi cinsiyetine uyan ilanları görür
       genderFilter(myGender),
       // Kendi ilanlarını akışta görmesin (sadece İlanlarım sekmesinde)
@@ -348,6 +349,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       WHERE l.user_id = ANY($1::uuid[])
         AND l.user_id <> $3
         AND l.status = 'active'
+        AND l.admin_removed_at IS NULL
         AND l.created_at >= now() - ($2 || ' hours')::interval
         AND ${genderFilter(myGender)}
         ${freeOnly ? 'AND (l.price = 0 OR l.is_negotiable = TRUE)' : ''}
@@ -481,6 +483,19 @@ router.post('/', requireAuth, async (req, res, next) => {
   try {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
+
+    // Yasak kelime kontrolü — title + description birlikte taranır
+    const bannedWords = require('../services/banned-words');
+    const combinedText = (value.title || '') + '\n' + (value.description || '');
+    const check = await bannedWords.checkText(combinedText);
+    if (check.blocked) {
+      return res.status(400).json({
+        error: 'content_blocked',
+        message: check.message,
+        matched: check.matched_pattern,
+      });
+    }
+
     await client.query('BEGIN');
     // Eğer kullanıcı cinsiyet kısıtı istiyorsa, kendi cinsiyetiyle uyumlu olmalı
     let restrictedTo = null;
@@ -522,15 +537,35 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     await client.query('BEGIN');
 
     // Önce sahiplik kontrolü + ESKİ FİYATI öğren (fiyat değişti mi bakacağız)
+    // Admin kaldırdıysa (admin_removed_at NOT NULL) kullanıcı düzenleyemez
     const own = await client.query(
-      'SELECT id, price FROM listings WHERE id = $1 AND user_id = $2',
+      'SELECT id, price, admin_removed_at FROM listings WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
     );
     if (own.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'not_found' });
     }
+    if (own.rows[0].admin_removed_at) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'admin_removed', message: 'Bu ilan yönetim tarafından kaldırıldı, düzenlenemez.' });
+    }
     const oldPrice = Number(own.rows[0].price);
+
+    // Yasak kelime kontrolü — title/description güncellemesinde
+    if (req.body?.title || req.body?.description) {
+      const bannedWords = require('../services/banned-words');
+      const combinedText = (req.body.title || '') + '\n' + (req.body.description || '');
+      const check = await bannedWords.checkText(combinedText);
+      if (check.blocked) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'content_blocked',
+          message: check.message,
+          matched: check.matched_pattern,
+        });
+      }
+    }
 
     // Basit alan güncellemeleri
     const fields = ['title', 'description', 'price', 'status', 'location_city', 'location_district'];

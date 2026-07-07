@@ -88,9 +88,15 @@
       <button data-tab="users" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>👥</span> Kullanıcılar
       </button>
+      <button data-tab="listings" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>📦</span> İlanlar
+      </button>
       <button data-tab="reports" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>⚠️</span> Şikayetler
         <span id="reports-badge" class="hidden ml-auto bg-red-600 text-xs px-2 py-0.5 rounded-full">0</span>
+      </button>
+      <button data-tab="banned" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>🚫</span> Yasak Kelimeler
       </button>
     </nav>
     <div class="p-3 border-t border-slate-800">
@@ -279,11 +285,19 @@ function switchTab(tab) {
       b.classList.remove('bg-slate-800');
     }
   });
-  const titles = { dashboard: 'Dashboard', users: 'Kullanıcı Yönetimi', reports: 'Şikayetler' };
+  const titles = {
+    dashboard: 'Dashboard',
+    users: 'Kullanıcı Yönetimi',
+    listings: 'İlan Moderasyonu',
+    reports: 'Şikayetler',
+    banned: 'Yasak Kelimeler',
+  };
   document.getElementById('page-title').textContent = titles[tab] || '';
   if (tab === 'dashboard') renderDashboard();
   if (tab === 'users') renderUsers();
+  if (tab === 'listings') renderListings();
   if (tab === 'reports') renderReports();
+  if (tab === 'banned') renderBanned();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1058,6 +1072,472 @@ async function submitNote(userId) {
   } catch (e) {
     err.textContent = e.message;
     err.classList.remove('hidden');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// İlanlar (moderasyon)
+// ═══════════════════════════════════════════════════════════════
+
+let listingsState = { q: '', status: 'all', category: '', city: '' };
+let currentListings = [];
+
+const LISTING_STATUS_FILTERS = [
+  { key: 'all', label: 'Tümü' },
+  { key: 'active', label: 'Aktif' },
+  { key: 'featured', label: '⭐ Öne Çıkan' },
+  { key: 'removed', label: '🗑️ Kaldırılmış' },
+  { key: 'sold', label: '✓ Satıldı' },
+];
+
+function renderListings() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="mb-3 flex flex-wrap gap-3 items-center">
+      <input id="listing-search" placeholder="Başlık veya açıklama..."
+        value="${listingsState.q.replace(/"/g, '&quot;')}"
+        class="flex-1 min-w-[240px] px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79]" />
+      <input id="listing-city" placeholder="Şehir..." value="${listingsState.city.replace(/"/g, '&quot;')}"
+        class="w-40 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79]" />
+    </div>
+    <div class="mb-4 flex gap-1 flex-wrap">
+      ${LISTING_STATUS_FILTERS.map(f => `
+        <button data-lstatus="${f.key}" class="lstat-chip px-3 py-2 text-sm rounded-lg border ${listingsState.status === f.key ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300'}">
+          ${f.label}
+        </button>`).join('')}
+    </div>
+    <div id="listings-list" class="grid grid-cols-2 gap-3">
+      <div class="col-span-2 p-16 flex justify-center"><div class="spinner"></div></div>
+    </div>
+  `;
+
+  let debounceT;
+  document.getElementById('listing-search').addEventListener('input', (e) => {
+    clearTimeout(debounceT);
+    debounceT = setTimeout(() => { listingsState.q = e.target.value.trim(); loadListings(); }, 300);
+  });
+  document.getElementById('listing-city').addEventListener('input', (e) => {
+    clearTimeout(debounceT);
+    debounceT = setTimeout(() => { listingsState.city = e.target.value.trim(); loadListings(); }, 300);
+  });
+  document.querySelectorAll('.lstat-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      listingsState.status = b.dataset.lstatus;
+      renderListings();
+    });
+  });
+  loadListings();
+}
+
+async function loadListings() {
+  const list = document.getElementById('listings-list');
+  try {
+    const params = new URLSearchParams({ limit: '60' });
+    if (listingsState.q) params.set('q', listingsState.q);
+    if (listingsState.city) params.set('city', listingsState.city);
+    if (listingsState.status !== 'all') params.set('status', listingsState.status);
+    const data = await apiJson('/admin/listings?' + params.toString());
+    const rows = data?.listings || [];
+    currentListings = rows;
+    if (rows.length === 0) {
+      list.innerHTML = '<div class="col-span-2 p-12 text-center text-slate-400">Sonuç yok</div>';
+      return;
+    }
+    list.innerHTML = rows.map(l => listingCard(l)).join('');
+    list.querySelectorAll('[data-listing-id]').forEach(el => {
+      el.addEventListener('click', () => openListingDetail(el.dataset.listingId));
+    });
+  } catch (err) {
+    list.innerHTML = '<div class="col-span-2 p-6 text-red-600">Hata: ' + err.message + '</div>';
+  }
+}
+
+function listingCard(l) {
+  const isRemoved = !!l.admin_removed_at;
+  const isFeatured = l.featured_until && new Date(l.featured_until) > new Date();
+  const cover = l.cover_photo || '';
+  return `
+    <div data-listing-id="${l.id}" class="bg-white border ${isRemoved ? 'border-red-300 bg-red-50' : isFeatured ? 'border-amber-300' : 'border-slate-200'} rounded-xl overflow-hidden cursor-pointer hover:shadow-md transition-shadow">
+      <div class="aspect-square bg-slate-100 relative overflow-hidden">
+        ${cover ? `<img src="${cover}" class="w-full h-full object-cover" />` : '<div class="w-full h-full flex items-center justify-center text-4xl text-slate-300">📦</div>'}
+        ${isFeatured ? '<div class="absolute top-2 left-2 bg-amber-500 text-white text-xs px-2 py-0.5 rounded-full font-bold">⭐ ÖNE ÇIKAN</div>' : ''}
+        ${isRemoved ? '<div class="absolute inset-0 bg-red-500/40 flex items-center justify-center"><span class="bg-red-600 text-white text-xs px-3 py-1 rounded font-bold">KALDIRILDI</span></div>' : ''}
+        ${l.reports_count > 0 ? '<div class="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-0.5 rounded-full font-bold">⚠️ ' + l.reports_count + '</div>' : ''}
+      </div>
+      <div class="p-3">
+        <div class="font-semibold text-sm truncate">${l.title}</div>
+        <div class="text-lg font-bold text-[#1F4E79] mt-1">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
+        <div class="text-xs text-slate-500 truncate mt-1">
+          👤 ${l.seller_name || '?'}
+          ${l.location_city ? ' · 📍 ' + l.location_city : ''}
+        </div>
+        <div class="text-xs text-slate-400 mt-0.5">
+          ${l.category_name || '(kategori yok)'} · ${formatDateShort(l.created_at)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function openListingDetail(listingId) {
+  openModal('<div class="p-16 flex justify-center"><div class="spinner"></div></div>');
+  try {
+    const data = await apiJson('/admin/listings/' + listingId);
+    renderListingDetail(data);
+  } catch (err) {
+    openModal('<div class="p-6 text-red-600">Hata: ' + err.message + '</div>');
+  }
+}
+
+function renderListingDetail(data) {
+  const { listing: l, photos, reports } = data;
+  const isRemoved = !!l.admin_removed_at;
+  const isFeatured = l.featured_until && new Date(l.featured_until) > new Date();
+
+  let statusBadgeHtml = '';
+  if (isRemoved) statusBadgeHtml = '<span class="bg-red-100 text-red-800 text-xs px-2 py-0.5 rounded-full font-bold">🗑️ Kaldırıldı</span>';
+  else if (isFeatured) statusBadgeHtml = '<span class="bg-amber-100 text-amber-800 text-xs px-2 py-0.5 rounded-full font-bold">⭐ Öne Çıkan</span>';
+  else if (l.status === 'sold') statusBadgeHtml = '<span class="bg-slate-100 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">✓ Satıldı</span>';
+  else statusBadgeHtml = '<span class="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full font-bold">🟢 Aktif</span>';
+
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-start justify-between">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-1">
+          <div class="text-lg font-bold">${l.title}</div>
+          ${statusBadgeHtml}
+        </div>
+        <div class="text-xl font-bold text-[#1F4E79]">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
+        ${isFeatured ? `<div class="text-xs text-amber-700 mt-1">⭐ Öne çıkma bitişi: ${new Date(l.featured_until).toLocaleString('tr-TR')}</div>` : ''}
+        ${isRemoved ? `<div class="text-xs text-red-700 mt-1">🗑️ Kaldırma sebebi: ${l.admin_removed_reason || '-'}</div>` : ''}
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+
+    ${photos.length > 0 ? `
+    <div class="p-6 border-b border-slate-200">
+      <div class="grid grid-cols-4 gap-2">
+        ${photos.slice(0, 8).map(p => `<img src="${p.thumb_url || p.url}" class="aspect-square object-cover rounded-lg border border-slate-200" />`).join('')}
+      </div>
+      ${photos.length > 8 ? `<div class="text-xs text-slate-500 mt-2">+${photos.length - 8} foto daha</div>` : ''}
+    </div>` : ''}
+
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-sm whitespace-pre-wrap">${l.description || '(açıklama yok)'}</div>
+    </div>
+
+    <div class="p-6 border-b border-slate-200 grid grid-cols-2 gap-3 text-sm">
+      <div><span class="text-slate-500">Kategori:</span> <b>${l.category_name || '—'}</b></div>
+      <div><span class="text-slate-500">Şehir:</span> <b>${l.location_city || '—'}</b></div>
+      <div><span class="text-slate-500">Oluşturma:</span> <b>${new Date(l.created_at).toLocaleString('tr-TR')}</b></div>
+      <div><span class="text-slate-500">Güncelleme:</span> <b>${new Date(l.updated_at).toLocaleString('tr-TR')}</b></div>
+      <div class="col-span-2 flex items-center gap-2">
+        <span class="text-slate-500">Satıcı:</span>
+        <button onclick="closeModal(); openUserDetail('${l.user_id}')" class="text-[#1F4E79] font-semibold hover:underline">
+          ${l.seller_name || '(isimsiz)'}
+        </button>
+        ${l.seller_status !== 'active' ? `<span class="text-xs text-red-600 font-semibold">(${l.seller_status})</span>` : ''}
+      </div>
+    </div>
+
+    ${reports.length > 0 ? `
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">⚠️ Bu ilan hakkında ${reports.length} şikayet</div>
+      ${reports.slice(0, 5).map(r => `
+        <div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-2 text-sm">
+          <div class="font-medium">💬 ${r.reason}</div>
+          <div class="text-xs text-red-700 mt-1">${r.status} · ${new Date(r.created_at).toLocaleString('tr-TR')}</div>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <div class="p-6 flex flex-wrap gap-2">
+      ${!isRemoved && !isFeatured ? `
+        <button onclick="openListingFeatureDialog('${l.id}', '${l.title.replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-amber-100 text-amber-800 font-semibold hover:bg-amber-200">
+          ⭐ Öne Çıkar
+        </button>` : ''}
+      ${isFeatured ? `
+        <button onclick="listingAction('${l.id}', 'unfeature', 'Öne çıkarma iptal')"
+          class="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">
+          ⭐ Öne Çıkarmayı İptal
+        </button>` : ''}
+      ${!isRemoved ? `
+        <button onclick="openListingActionDialog('${l.id}', 'remove', '${l.title.replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-yellow-100 text-yellow-800 font-semibold hover:bg-yellow-200">
+          🗑️ Kaldır (Soft)
+        </button>` : `
+        <button onclick="openListingActionDialog('${l.id}', 'restore', '${l.title.replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">
+          ↩️ Kaldırmayı Geri Al
+        </button>`}
+      <button onclick="openListingActionDialog('${l.id}', 'delete', '${l.title.replace(/'/g, "\\'")}')"
+        class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">
+        ❌ Kalıcı Sil (KVKK)
+      </button>
+    </div>
+  `;
+  document.getElementById('modal-content').innerHTML = html;
+}
+
+const ACTION_LABELS = {
+  remove: { title: 'İlanı Kaldır', desc: 'İlan görünmez olacak, satıcı düzenleyemez. Sonradan geri alınabilir.', color: 'bg-yellow-600 hover:bg-yellow-700' },
+  restore: { title: 'Kaldırmayı Geri Al', desc: 'İlan tekrar aktif hale gelir, kullanıcı düzenleyebilir.', color: 'bg-green-600 hover:bg-green-700' },
+  delete: { title: 'Kalıcı Sil', desc: 'İlan ve tüm fotolar KALICI OLARAK silinir. Geri alınamaz. KVKK/DMCA talebi için.', color: 'bg-red-600 hover:bg-red-700' },
+};
+
+function openListingActionDialog(listingId, action, title) {
+  const cfg = ACTION_LABELS[action];
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">${cfg.title}</div>
+        <div class="text-xs text-slate-500 mt-1 truncate max-w-md">${title}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-3">
+      <div class="text-sm text-slate-600">${cfg.desc}</div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Gerekçe <span class="text-red-600">*</span></label>
+        <textarea id="listing-reason" rows="3" minlength="3" maxlength="500"
+          placeholder="Neden bu aksiyon? (Audit log'da kalır)"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79] resize-none"></textarea>
+      </div>
+      <div id="listing-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitListingAction('${listingId}', '${action}')" class="flex-1 px-4 py-3 rounded-lg ${cfg.color} text-white font-semibold">Uygula</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+function openListingFeatureDialog(listingId, title) {
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">⭐ Öne Çıkar</div>
+        <div class="text-xs text-slate-500 mt-1 truncate max-w-md">${title}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-3">
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-2">Süre</label>
+        <div class="grid grid-cols-4 gap-2">
+          ${[24, 72, 168, 720].map((h, i) => `
+            <button type="button" data-fdur="${h}" class="fdur-btn px-3 py-2 border border-slate-300 rounded-lg text-sm ${i === 2 ? 'bg-amber-500 text-white border-amber-500' : 'bg-white'}">
+              ${h === 24 ? '1 gün' : h === 72 ? '3 gün' : h === 168 ? '7 gün' : '30 gün'}
+            </button>`).join('')}
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Gerekçe <span class="text-red-600">*</span></label>
+        <textarea id="feature-reason" rows="3" minlength="3" maxlength="500"
+          placeholder="Öne çıkarma nedeni"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79] resize-none"></textarea>
+      </div>
+      <div id="feature-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitFeature('${listingId}')" class="flex-1 px-4 py-3 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold">Öne Çıkar</button>
+    </div>
+  `;
+  openModal(html);
+  window._featureHours = 168;
+  document.querySelectorAll('.fdur-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.fdur-btn').forEach(x => x.classList.remove('bg-amber-500', 'text-white', 'border-amber-500'));
+      b.classList.add('bg-amber-500', 'text-white', 'border-amber-500');
+      window._featureHours = parseInt(b.dataset.fdur, 10);
+    });
+  });
+}
+
+async function submitListingAction(listingId, action) {
+  const reason = document.getElementById('listing-reason').value.trim();
+  const err = document.getElementById('listing-error');
+  err.classList.add('hidden');
+  if (reason.length < 3) {
+    err.textContent = 'Gerekçe en az 3 karakter olmalı.';
+    err.classList.remove('hidden');
+    return;
+  }
+  try {
+    await apiJson('/admin/listings/' + listingId + '/action', {
+      method: 'POST',
+      body: JSON.stringify({ action, reason }),
+    });
+    closeModal();
+    loadListings();
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  }
+}
+
+async function submitFeature(listingId) {
+  const reason = document.getElementById('feature-reason').value.trim();
+  const err = document.getElementById('feature-error');
+  err.classList.add('hidden');
+  if (reason.length < 3) {
+    err.textContent = 'Gerekçe en az 3 karakter olmalı.';
+    err.classList.remove('hidden');
+    return;
+  }
+  try {
+    await apiJson('/admin/listings/' + listingId + '/action', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'feature', reason, feature_hours: window._featureHours || 168 }),
+    });
+    closeModal();
+    loadListings();
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  }
+}
+
+async function listingAction(listingId, action, reason) {
+  try {
+    await apiJson('/admin/listings/' + listingId + '/action', {
+      method: 'POST',
+      body: JSON.stringify({ action, reason }),
+    });
+    closeModal();
+    loadListings();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Yasak Kelimeler
+// ═══════════════════════════════════════════════════════════════
+
+function renderBanned() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="grid grid-cols-3 gap-6">
+      <div class="col-span-2">
+        <div class="text-sm text-slate-500 italic mb-2">İlanların başlık ve açıklamalarında bu kelimeler tespit edilirse otomatik reddedilir. Kullanıcı sebep mesajını görür.</div>
+        <div id="banned-list" class="space-y-2">
+          <div class="p-12 flex justify-center"><div class="spinner"></div></div>
+        </div>
+      </div>
+      <div>
+        <div class="bg-white rounded-xl border border-slate-200 p-4 sticky top-4">
+          <div class="font-bold mb-3">➕ Yeni Yasak Kelime</div>
+          <form id="banned-form" class="space-y-3">
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Kelime / Regex</label>
+              <input id="bw-pattern" required maxlength="200"
+                placeholder="whatsapp, iban:, para gönder..."
+                class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-[#1F4E79]" />
+            </div>
+            <div class="flex items-center gap-2">
+              <input type="checkbox" id="bw-regex" class="w-4 h-4" />
+              <label for="bw-regex" class="text-xs">Regex olarak yorumla</label>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Kategori</label>
+              <select id="bw-category" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm">
+                <option value="">— Genel —</option>
+                <option value="iletisim">📞 İletişim (whatsapp, tel, iban)</option>
+                <option value="yasadisi">🚫 Yasadışı (silah, uyuşturucu)</option>
+                <option value="dolandiricilik">🎣 Dolandırıcılık</option>
+                <option value="spam">📢 Spam</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-700 mb-1">Kullanıcıya Mesaj (opsiyonel)</label>
+              <textarea id="bw-message" rows="2" maxlength="200"
+                placeholder="Boş bırakılırsa kategori'nin default mesajı gösterilir"
+                class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm resize-none focus:outline-none focus:border-[#1F4E79]"></textarea>
+            </div>
+            <div id="bw-error" class="hidden text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2"></div>
+            <button type="submit" class="w-full bg-[#1F4E79] hover:bg-[#183a5c] text-white text-sm font-semibold py-2 rounded-lg">
+              ➕ Ekle
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('banned-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pattern = document.getElementById('bw-pattern').value.trim();
+    const is_regex = document.getElementById('bw-regex').checked;
+    const category = document.getElementById('bw-category').value;
+    const message = document.getElementById('bw-message').value.trim();
+    const err = document.getElementById('bw-error');
+    err.classList.add('hidden');
+    try {
+      await apiJson('/admin/banned-words', {
+        method: 'POST',
+        body: JSON.stringify({ pattern, is_regex, category, message }),
+      });
+      document.getElementById('banned-form').reset();
+      loadBanned();
+    } catch (e) {
+      err.textContent = e.message;
+      err.classList.remove('hidden');
+    }
+  });
+  loadBanned();
+}
+
+async function loadBanned() {
+  const list = document.getElementById('banned-list');
+  try {
+    const data = await apiJson('/admin/banned-words');
+    const words = data?.words || [];
+    if (words.length === 0) {
+      list.innerHTML = '<div class="bg-white rounded-xl border border-slate-200 p-12 text-center text-slate-400">Henüz yasak kelime eklenmemiş</div>';
+      return;
+    }
+    list.innerHTML = words.map(w => bannedRow(w)).join('');
+    list.querySelectorAll('[data-bw-del]').forEach(el => {
+      el.addEventListener('click', () => deleteBanned(el.dataset.bwDel));
+    });
+  } catch (err) {
+    list.innerHTML = '<div class="bg-red-50 border border-red-200 p-4 rounded-lg text-red-600">Hata: ' + err.message + '</div>';
+  }
+}
+
+function bannedRow(w) {
+  const catBadges = {
+    iletisim: 'bg-blue-100 text-blue-800',
+    yasadisi: 'bg-red-100 text-red-800',
+    dolandiricilik: 'bg-purple-100 text-purple-800',
+    spam: 'bg-slate-100 text-slate-700',
+  };
+  const catBadge = w.category ? `<span class="text-xs px-2 py-0.5 rounded-full font-semibold ${catBadges[w.category] || 'bg-slate-100 text-slate-700'}">${w.category}</span>` : '';
+  return `
+    <div class="bg-white border border-slate-200 rounded-lg p-3 flex items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <code class="font-mono text-sm bg-slate-100 px-2 py-0.5 rounded">${w.pattern}</code>
+          ${w.is_regex ? '<span class="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full font-semibold">regex</span>' : ''}
+          ${catBadge}
+        </div>
+        ${w.message ? '<div class="text-xs text-slate-600 mt-1 italic">"' + w.message + '"</div>' : ''}
+        <div class="text-xs text-slate-400 mt-1">${w.added_by_name || 'Sistem'} · ${new Date(w.created_at).toLocaleDateString('tr-TR')}</div>
+      </div>
+      <button data-bw-del="${w.id}" class="text-red-600 hover:bg-red-50 p-2 rounded">🗑️</button>
+    </div>
+  `;
+}
+
+async function deleteBanned(id) {
+  if (!confirm('Bu yasak kelimeyi kaldır?')) return;
+  try {
+    await apiJson('/admin/banned-words/' + id, { method: 'DELETE' });
+    loadBanned();
+  } catch (e) {
+    alert('Hata: ' + e.message);
   }
 }
 
