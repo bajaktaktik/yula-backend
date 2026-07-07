@@ -5,7 +5,7 @@
 const express = require('express');
 const Joi = require('joi');
 const pool = require('../db/pool');
-const { requireAuth } = require('../auth/middleware');
+const { requireAuth, invalidateUserStatusCache } = require('../auth/middleware');
 
 const router = express.Router();
 
@@ -230,7 +230,7 @@ router.get('/sms-balance', requireAuth, requireAdmin, async (req, res, next) => 
   res.json(result);
 });
 
-// GET /admin/stats — özet
+// GET /admin/stats — özet (eski)
 router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const r = await pool.query(`
@@ -243,6 +243,197 @@ router.get('/stats', requireAuth, requireAdmin, async (req, res, next) => {
         (SELECT COUNT(*) FROM listings) AS total_listings
     `);
     res.json(r.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/dashboard — Dashboard için özet metrikler
+// Bugün (00:00'dan itibaren) + dün karşılaştırması + toplam/aktif rakamlar
+router.get('/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(`
+      WITH today AS (SELECT date_trunc('day', now()) AS ts),
+           yesterday AS (SELECT date_trunc('day', now() - interval '1 day') AS ts),
+           two_days_ago AS (SELECT date_trunc('day', now() - interval '2 days') AS ts)
+      SELECT
+        -- KAYITLAR
+        (SELECT COUNT(*)::int FROM users WHERE created_at >= (SELECT ts FROM today))                             AS signup_today,
+        (SELECT COUNT(*)::int FROM users WHERE created_at >= (SELECT ts FROM yesterday) AND created_at < (SELECT ts FROM today))    AS signup_yesterday,
+        (SELECT COUNT(*)::int FROM users)                                                                        AS users_total,
+        (SELECT COUNT(*)::int FROM users WHERE status = 'active')                                                AS users_active,
+        (SELECT COUNT(*)::int FROM users WHERE status = 'suspended')                                             AS users_suspended,
+        (SELECT COUNT(*)::int FROM users WHERE status = 'banned')                                                AS users_banned,
+
+        -- İLANLAR
+        (SELECT COUNT(*)::int FROM listings WHERE created_at >= (SELECT ts FROM today))                          AS listings_today,
+        (SELECT COUNT(*)::int FROM listings WHERE created_at >= (SELECT ts FROM yesterday) AND created_at < (SELECT ts FROM today)) AS listings_yesterday,
+        (SELECT COUNT(*)::int FROM listings WHERE status = 'active')                                             AS listings_active,
+        (SELECT COUNT(*)::int FROM listings)                                                                     AS listings_total,
+
+        -- MESAJLAR
+        (SELECT COUNT(*)::int FROM messages WHERE sent_at >= (SELECT ts FROM today))                             AS messages_today,
+        (SELECT COUNT(*)::int FROM messages WHERE sent_at >= (SELECT ts FROM yesterday) AND sent_at < (SELECT ts FROM today))       AS messages_yesterday,
+
+        -- AKTİF KULLANICI (DAU / MAU)
+        (SELECT COUNT(*)::int FROM users WHERE last_active_at >= now() - interval '24 hours')                    AS dau,
+        (SELECT COUNT(*)::int FROM users WHERE last_active_at >= now() - interval '7 days')                      AS wau,
+        (SELECT COUNT(*)::int FROM users WHERE last_active_at >= now() - interval '30 days')                     AS mau,
+
+        -- ŞİKAYETLER
+        (SELECT COUNT(*)::int FROM reports WHERE status = 'pending')                                             AS reports_pending,
+        (SELECT COUNT(*)::int FROM reports WHERE created_at >= (SELECT ts FROM today))                           AS reports_today,
+
+        -- CİNSİYET DAĞILIMI
+        (SELECT COUNT(*)::int FROM users WHERE gender = 'female')                                                AS users_female,
+        (SELECT COUNT(*)::int FROM users WHERE gender = 'male')                                                  AS users_male,
+
+        -- KONUŞMA
+        (SELECT COUNT(*)::int FROM conversations)                                                                AS conversations_total
+    `);
+    res.json(r.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/users?q=arama&status=active&limit=50&offset=0
+// Kullanıcı arama — display_name (case-insensitive contains) veya id (UUID exact)
+router.get('/users', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || 'all');
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
+
+    const conds = [];
+    const params = [];
+
+    // ID (UUID) tam eşleşme veya isim ILIKE
+    if (q) {
+      // UUID formatına benziyorsa ID ile ara, değilse isim
+      const looksLikeUuid = /^[0-9a-f-]{8,}$/i.test(q);
+      if (looksLikeUuid) {
+        params.push(q);
+        conds.push(`u.id::text ILIKE '%' || $${params.length} || '%'`);
+      } else {
+        params.push(q);
+        conds.push(`u.display_name ILIKE '%' || $${params.length} || '%'`);
+      }
+    }
+    if (status !== 'all') {
+      params.push(status);
+      conds.push(`u.status = $${params.length}`);
+    }
+    const whereSql = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+
+    params.push(limit);
+    const limitIdx = params.length;
+    params.push(offset);
+    const offsetIdx = params.length;
+
+    const r = await pool.query(
+      `SELECT
+         u.id, u.display_name, u.avatar_url, u.gender, u.location_city, u.status,
+         u.created_at, u.last_active_at,
+         (SELECT COUNT(*)::int FROM listings WHERE user_id = u.id AND status = 'active') AS active_listing_count,
+         (SELECT COUNT(*)::int FROM reports  WHERE target_type = 'user' AND target_id = u.id) AS reports_against
+       FROM users u
+       ${whereSql}
+       ORDER BY u.last_active_at DESC NULLS LAST
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
+    );
+    res.json({ users: r.rows, count: r.rowCount });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/users/:id — kullanıcı detayı (ilanları, mesaj sayısı, şikayet sayısı)
+router.get('/users/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const u = await pool.query(
+      `SELECT id, display_name, avatar_url, bio, gender, location_city, status,
+              created_at, last_active_at, onboarded_at
+       FROM users WHERE id = $1`,
+      [req.params.id]
+    );
+    if (u.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const user = u.rows[0];
+
+    // İstatistikler tek seferde
+    const stats = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM listings   WHERE user_id = $1)                            AS listings_total,
+         (SELECT COUNT(*)::int FROM listings   WHERE user_id = $1 AND status = 'active')      AS listings_active,
+         (SELECT COUNT(*)::int FROM messages   WHERE sender_id = $1)                          AS messages_sent,
+         (SELECT COUNT(DISTINCT id)::int FROM conversations WHERE buyer_id = $1 OR seller_id = $1) AS conversations_count,
+         (SELECT COUNT(*)::int FROM reports    WHERE target_type = 'user' AND target_id = $1) AS reports_against,
+         (SELECT COUNT(*)::int FROM reports    WHERE reporter_id = $1)                        AS reports_by,
+         (SELECT COUNT(*)::int FROM user_contacts WHERE user_id = $1)                         AS contacts_count,
+         (SELECT COUNT(*)::int FROM device_tokens WHERE user_id = $1)                         AS devices_count,
+         (SELECT COUNT(*)::int FROM user_blocks WHERE blocker_id = $1 OR blocked_id = $1)     AS blocks_count`,
+      [req.params.id]
+    );
+
+    // Son 5 ilan (özet)
+    const recentListings = await pool.query(
+      `SELECT id, title, price, status, created_at
+       FROM listings WHERE user_id = $1
+       ORDER BY created_at DESC LIMIT 5`,
+      [req.params.id]
+    );
+
+    // Kendisi hakkında son 5 şikayet
+    const recentReports = await pool.query(
+      `SELECT id, target_type, reason, status, created_at
+       FROM reports WHERE target_type = 'user' AND target_id = $1
+       ORDER BY created_at DESC LIMIT 5`,
+      [req.params.id]
+    );
+
+    res.json({
+      user,
+      stats: stats.rows[0],
+      recent_listings: recentListings.rows,
+      recent_reports: recentReports.rows,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/users/:id/status — active/suspended/banned
+// Askıya alınan kullanıcı giriş yapabilir ama ilan/mesaj göremez (frontend/backend filter).
+// Ban edilen kullanıcı hiç giriş yapamaz (auth middleware'de kontrol edilir).
+const statusSchema = Joi.object({
+  status: Joi.string().valid('active', 'suspended', 'banned').required(),
+  reason: Joi.string().max(500).allow('').optional(),
+});
+
+router.post('/users/:id/status', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = statusSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Kendini banlamayı engelle
+    if (req.params.id === req.userId && value.status !== 'active') {
+      return res.status(400).json({ error: 'cannot_ban_self', message: 'Kendini banlayamazsın.' });
+    }
+
+    const r = await pool.query(
+      `UPDATE users SET status = $2 WHERE id = $1
+       RETURNING id, display_name, status`,
+      [req.params.id, value.status]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
+
+    // Middleware cache'ini patlat — yasak/askı hemen etkili olsun (30sn beklemesin)
+    invalidateUserStatusCache(req.params.id);
+
+    console.log(`[admin] user_status_change id=${req.params.id} status=${value.status} by=${req.userId} reason=${value.reason || ''}`);
+    res.json({ ok: true, user: r.rows[0] });
   } catch (err) {
     next(err);
   }

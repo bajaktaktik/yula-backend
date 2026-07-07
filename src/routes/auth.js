@@ -124,12 +124,16 @@ router.post('/login-pin', async (req, res, next) => {
 
     // ─── NORMAL PIN GİRİŞİ ───
     const q = await pool.query(
-      'SELECT id, display_name, avatar_url, bio, gender, location_city, pin_hash FROM users WHERE phone_hash = $1',
+      'SELECT id, display_name, avatar_url, bio, gender, location_city, pin_hash, status FROM users WHERE phone_hash = $1',
       [phoneHash]
     );
     if (q.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'Hesap yok — önce kayıt ol.' });
 
     const u = q.rows[0];
+    // Yasaklı hesap girişi tamamen kapatılır
+    if (u.status === 'banned') {
+      return res.status(403).json({ error: 'user_banned', message: 'Hesabınız yasaklanmıştır.' });
+    }
     if (!u.pin_hash) return res.status(400).json({ error: 'no_pin_set', message: 'Bu hesap PIN ile kayıtlı değil — kayıt ol.' });
 
     const ok = await bcrypt.compare(value.pin, u.pin_hash);
