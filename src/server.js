@@ -48,10 +48,15 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 100 }));
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 // Web Admin Paneli (macOS/tarayıcı için) — backend/public/panel/index.html
-// Rate limit dışında bırak (statik HTML — güvenlik için hâlâ /admin/* API'leri JWT ister)
+// GİZLİ URL: ADMIN_PANEL_PATH env değişkeni ile ayarlanır (Railway env).
+// Env boşsa varsayılan /panel — ama prod'da MUTLAKA random string ile değiştir.
+// Örnek: ADMIN_PANEL_PATH=x9k7m2q3f5 → https://api.abadan.com.tr/x9k7m2q3f5/
 const path = require('path');
-// Helmet default CSP'si Tailwind CDN + inline scripti bloke ediyor → /panel için gevşet
-app.use('/panel', (req, res, next) => {
+const rawPanelPath = (process.env.ADMIN_PANEL_PATH || 'panel').trim();
+const panelPath = '/' + rawPanelPath.replace(/^\/+|\/+$/g, ''); // /x9k7m2q3f5
+
+// Panel yükleme sırasında CSP'yi gevşet (Tailwind + unpkg CDN erişimi için)
+app.use(panelPath, (req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; " +
@@ -61,17 +66,43 @@ app.use('/panel', (req, res, next) => {
     "img-src 'self' data: https:; " +
     "font-src 'self' data:;"
   );
+  // Arama motorları hiç indexlemesin
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
   next();
 }, express.static(path.join(__dirname, '..', 'public', 'panel'), {
   maxAge: '1h',
   index: 'index.html',
 }));
 // Trailing slash olmayan istekler için de aç
-app.get('/panel', (req, res) => res.redirect('/panel/'));
+app.get(panelPath, (req, res) => res.redirect(panelPath + '/'));
+
+// GÜVENLİK — env'de custom path AYARLANDIYSA, eski /panel URL'ini kilitle
+if (panelPath !== '/panel') {
+  app.get('/panel', (req, res) => res.status(404).end());
+  app.get('/panel/*', (req, res) => res.status(404).end());
+}
+console.log(`[panel] Admin paneli URL: ${panelPath}/`);
 
 // OTP istek limiti (kötüye kullanım önleme)
 const otpLimiter = rateLimit({ windowMs: 60 * 1000, max: 1, keyGenerator: (req) => req.body?.phone || req.ip });
 app.use('/auth/request-otp', otpLimiter);
+
+// PIN girişi brute-force koruması — hem panel hem mobile için geçerli.
+// 5 dakika içinde IP başına max 6 deneme; başarısızlar sayılır, başarılı denemede sayaç sıfırlanır.
+// Bir kullanıcı PIN'i unutup birkaç yanlış giriş yapabilir → 6 makul; bot deneyen ise 5 dk beklemek zorunda.
+const loginLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 6,
+  keyGenerator: (req) => (req.body?.phone || '') + '|' + req.ip,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'too_many_attempts',
+    message: 'Çok fazla hatalı giriş. 5 dakika sonra tekrar dene.',
+  },
+});
+app.use('/auth/login-pin', loginLimiter);
 
 app.use('/auth', authRoutes);
 app.use('/users', userRoutes);

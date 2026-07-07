@@ -1,15 +1,22 @@
 const express = require('express');
 const Joi = require('joi');
 const bcrypt = require('bcrypt');
+const { authenticator } = require('otplib');
 const pool = require('../db/pool');
 const { normalizePhone, rehashClientHash } = require('../utils/phone');
 const { requestOtp, verifyOtp } = require('../auth/otp');
-const { signAccess, signRefresh, verifyRefresh } = require('../auth/jwt');
+const { signAccess, signRefresh, verifyRefresh, verifyAccess } = require('../auth/jwt');
 const { ensureReviewerSeed } = require('../services/reviewer-seed');
 const { requireAuth } = require('../auth/middleware');
 
 const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
   .split(',').map((s) => s.trim()).filter(Boolean);
+
+const ADMIN_USER_IDS_SET = new Set(
+  (process.env.ADMIN_USER_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)
+);
+// TOTP: tolerans ±1 pencere (30sn öncesi/sonrası kabul) — cihaz saati kaymalarına dayanıklı
+authenticator.options = { window: 1, step: 30 };
 
 const router = express.Router();
 
@@ -273,6 +280,160 @@ router.post('/reset-pin', async (req, res, next) => {
     const newHash = await bcrypt.hash(value.newPin, 10);
     await pool.query('UPDATE users SET pin_hash = $1, last_active_at = now() WHERE id = $2', [newHash, q.rows[0].id]);
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// WEB ADMIN PANEL LOGIN — TOTP (Google Authenticator) 2FA zorunlu
+// ═══════════════════════════════════════════════════════════════
+// Mobile app değişmez, /auth/login-pin kullanır.
+// Web panel /auth/panel/login kullanır ve is_admin + TOTP zorunludur.
+
+const panelLoginSchema = Joi.object({
+  phone: Joi.string().required(),
+  phoneSha256: Joi.string().length(64).required(),
+  pin: Joi.string().pattern(/^\d{4,8}$/).required(),
+  totp: Joi.string().length(6).pattern(/^\d{6}$/).optional(),
+});
+
+router.post('/panel/login', async (req, res, next) => {
+  try {
+    const { value, error } = panelLoginSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const phoneHash = rehashClientHash(value.phoneSha256);
+    const q = await pool.query(
+      `SELECT id, display_name, avatar_url, bio, gender, location_city, pin_hash, status,
+              admin_totp_secret, admin_totp_verified_at
+       FROM users WHERE phone_hash = $1`,
+      [phoneHash]
+    );
+    if (q.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'Hesap yok.' });
+    const u = q.rows[0];
+    if (u.status === 'banned') return res.status(403).json({ error: 'user_banned', message: 'Hesabınız yasaklanmıştır.' });
+    if (!ADMIN_USER_IDS_SET.has(u.id)) {
+      return res.status(403).json({ error: 'not_admin', message: 'Panel erişimi reddedildi.' });
+    }
+
+    // PIN doğrula
+    if (!u.pin_hash) return res.status(400).json({ error: 'no_pin_set' });
+    const okPin = await bcrypt.compare(value.pin, u.pin_hash);
+    if (!okPin) return res.status(401).json({ error: 'wrong_pin', message: 'PIN hatalı.' });
+
+    // TOTP durumu
+    const hasVerifiedTotp = u.admin_totp_secret && u.admin_totp_verified_at;
+
+    if (!hasVerifiedTotp) {
+      // Setup gerekli — geçici token (kısa ömürlü) döndür, kullanıcı /panel/totp-setup çağıracak
+      // Bu geçici token'ın scope'u sadece TOTP kurulumu; genel access gibi kullanılamaz
+      const setupToken = signAccess(u.id, { scope: 'totp_setup', expiresIn: '10m' });
+      return res.status(200).json({
+        setup_required: true,
+        setup_token: setupToken,
+        message: 'İlk giriş — Google Authenticator kurulumu gerekli.',
+      });
+    }
+
+    // TOTP zorunlu
+    if (!value.totp) {
+      return res.status(400).json({ error: 'totp_required', message: 'Google Authenticator kodu gerekli.' });
+    }
+    const okTotp = authenticator.check(value.totp, u.admin_totp_secret);
+    if (!okTotp) {
+      return res.status(401).json({ error: 'wrong_totp', message: 'Doğrulama kodu hatalı.' });
+    }
+
+    // Başarılı — normal token dön
+    await pool.query('UPDATE users SET last_active_at = now() WHERE id = $1', [u.id]);
+    delete u.pin_hash;
+    delete u.admin_totp_secret;
+    delete u.admin_totp_verified_at;
+    u.is_admin = true;
+    console.log(`[auth] panel login user=${u.id}`);
+    res.json({
+      user: u,
+      tokens: { access: signAccess(u.id), refresh: signRefresh(u.id) },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Kullanıcı setup_token ile bu endpoint'i çağırır — QR + secret döner
+// Frontend kullanıcıya QR kodu gösterir, kullanıcı Google Authenticator'a ekler.
+router.post('/panel/totp-setup', async (req, res, next) => {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    let payload;
+    try { payload = verifyAccess(token); } catch { return res.status(401).json({ error: 'invalid_token' }); }
+    if (payload.scope !== 'totp_setup') return res.status(403).json({ error: 'wrong_scope' });
+
+    const userId = payload.sub;
+    if (!ADMIN_USER_IDS_SET.has(userId)) return res.status(403).json({ error: 'not_admin' });
+
+    // Yeni secret üret + DB'ye ilk kez yaz (verified_at = null)
+    // Eğer önceden bir secret varsa (partial setup) üzerine yazılır — kullanıcı yeni QR kodu görür.
+    const secret = authenticator.generateSecret();
+    await pool.query(
+      `UPDATE users SET admin_totp_secret = $1, admin_totp_verified_at = NULL WHERE id = $2`,
+      [secret, userId]
+    );
+
+    // Kullanıcıya gösterilecek isim (Authenticator uygulamasında görünür)
+    const u = await pool.query('SELECT display_name FROM users WHERE id = $1', [userId]);
+    const label = 'Abadan Admin (' + (u.rows[0]?.display_name || userId.slice(0, 8)) + ')';
+    const issuer = 'Abadan';
+    const otpauthUri = authenticator.keyuri(label, issuer, secret);
+
+    console.log(`[auth] totp setup started for admin=${userId}`);
+    res.json({ secret, otpauth_uri: otpauthUri });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Kullanıcı Google Authenticator'a eklediği ilk kodu bu endpoint'te doğrular
+// Doğruysa verified_at = now() olur; sonraki loginlerde TOTP zorunlu.
+router.post('/panel/totp-enable', async (req, res, next) => {
+  try {
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    let payload;
+    try { payload = verifyAccess(token); } catch { return res.status(401).json({ error: 'invalid_token' }); }
+    if (payload.scope !== 'totp_setup') return res.status(403).json({ error: 'wrong_scope' });
+
+    const userId = payload.sub;
+    if (!ADMIN_USER_IDS_SET.has(userId)) return res.status(403).json({ error: 'not_admin' });
+
+    const { code } = req.body || {};
+    if (!code || !/^\d{6}$/.test(String(code))) return res.status(400).json({ error: 'invalid_code' });
+
+    const u = await pool.query(
+      'SELECT id, display_name, avatar_url, bio, gender, location_city, admin_totp_secret FROM users WHERE id = $1',
+      [userId]
+    );
+    if (u.rows.length === 0 || !u.rows[0].admin_totp_secret) {
+      return res.status(400).json({ error: 'setup_missing', message: 'Önce TOTP setup çağır.' });
+    }
+
+    const ok = authenticator.check(String(code), u.rows[0].admin_totp_secret);
+    if (!ok) return res.status(401).json({ error: 'wrong_code', message: 'Kod hatalı.' });
+
+    await pool.query('UPDATE users SET admin_totp_verified_at = now() WHERE id = $1', [userId]);
+    console.log(`[auth] totp verified & enabled for admin=${userId}`);
+
+    // Setup tamamlandı — normal token'ları dön (kullanıcı hemen giriş yapmış olur)
+    const user = { ...u.rows[0], is_admin: true };
+    delete user.admin_totp_secret;
+    res.json({
+      user,
+      tokens: { access: signAccess(userId), refresh: signRefresh(userId) },
+    });
   } catch (err) {
     next(err);
   }

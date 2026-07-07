@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Abadan Admin" />
-  <title>Abadan · Admin Paneli</title>
+  <meta name="robots" content="noindex, nofollow, noarchive" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Abadan</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231F4E79'/><text x='50' y='68' text-anchor='middle' font-size='60' fill='white' font-family='sans-serif' font-weight='bold'>A</text></svg>" />
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
     .card { background: white; border-radius: 12px; border: 1px solid #e2e8f0; padding: 16px; }
@@ -47,12 +50,60 @@
           placeholder="••••"
           class="w-full px-4 py-3 border border-slate-300 rounded-lg text-base tracking-widest focus:outline-none focus:border-[#1F4E79] focus:ring-2 focus:ring-[#1F4E79]/20" />
       </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">
+          Google Authenticator Kodu
+          <span class="text-xs text-slate-500 font-normal">(6 hane)</span>
+        </label>
+        <input id="totp" type="text" inputmode="numeric" maxlength="6"
+          placeholder="123 456"
+          class="w-full px-4 py-3 border border-slate-300 rounded-lg text-base tracking-[0.3em] text-center focus:outline-none focus:border-[#1F4E79] focus:ring-2 focus:ring-[#1F4E79]/20" />
+        <div class="text-xs text-slate-400 mt-1">İlk giriş yapıyorsan boş bırak — QR kodu göstereceğim.</div>
+      </div>
       <div id="login-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
       <button id="login-btn" type="submit"
         class="w-full bg-[#1F4E79] hover:bg-[#183a5c] text-white font-semibold py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
         Giriş Yap
       </button>
     </form>
+  </div>
+</div>
+
+<!-- ═══════════════════ TOTP SETUP ═══════════════════ -->
+<div id="setup-view" class="hidden min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-md bg-white rounded-2xl shadow-lg p-8">
+    <div class="text-center mb-6">
+      <div class="inline-block bg-[#1F4E79] w-14 h-14 rounded-2xl flex items-center justify-center text-white text-2xl font-bold mb-3">🔐</div>
+      <h1 class="text-xl font-bold">Google Authenticator Kurulumu</h1>
+      <p class="text-sm text-slate-500 mt-1">Bu ilk giriş için tek seferlik yapılır</p>
+    </div>
+
+    <ol class="text-sm space-y-2 text-slate-700 mb-4 pl-5 list-decimal">
+      <li>Telefonuna <b>Google Authenticator</b> uygulamasını yükle (App Store / Play Store)</li>
+      <li>Uygulamada + → <b>QR kod tara</b> — aşağıdaki kodu tara</li>
+      <li>Uygulamada beliren 6 haneli kodu aşağıya gir</li>
+    </ol>
+
+    <div id="qr-container" class="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col items-center mb-4">
+      <canvas id="qr-canvas" class="rounded-lg bg-white p-3"></canvas>
+      <div class="text-xs text-slate-500 mt-3 text-center">Ya da manuel giriş için gizli anahtar:</div>
+      <div id="secret-code" class="text-xs font-mono bg-white border border-slate-200 rounded px-3 py-2 mt-1 select-all text-center break-all"></div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-semibold text-slate-700 mb-1">6 Haneli Kod</label>
+      <input id="setup-code" type="text" inputmode="numeric" maxlength="6"
+        placeholder="123 456"
+        class="w-full px-4 py-3 border border-slate-300 rounded-lg text-lg tracking-[0.3em] text-center focus:outline-none focus:border-[#1F4E79] focus:ring-2 focus:ring-[#1F4E79]/20" />
+    </div>
+
+    <div id="setup-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-3"></div>
+
+    <button id="setup-btn"
+      class="w-full mt-4 bg-[#1F4E79] hover:bg-[#183a5c] text-white font-semibold py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+      ✓ Kodu Doğrula ve Giriş Yap
+    </button>
+    <button id="setup-cancel" class="w-full mt-2 text-sm text-slate-500 hover:text-slate-700">Vazgeç</button>
   </div>
 </div>
 
@@ -225,32 +276,77 @@ function logout() {
   showLogin();
 }
 
-async function doLogin(phoneInput, pin) {
+// Panel login — TOTP zorunlu (backend /auth/panel/login)
+// Cevap 3 farklı olabilir:
+//   1. setup_required: true, setup_token → TOTP setup ekranı gösterilir
+//   2. error 'totp_required' → kullanıcıya TOTP girmesini söyle
+//   3. Normal başarılı: user + tokens
+async function doLogin(phoneInput, pin, totp) {
   const phone = normalizeTRPhone(phoneInput);
   if (!phone) throw new Error('Geçersiz telefon numarası — TR formatında gir');
   const phoneSha256 = await sha256Hex(phone);
-  const res = await fetch(API_BASE + '/auth/login-pin', {
+  const body = { phone, phoneSha256, pin };
+  if (totp) body.totp = totp;
+
+  const res = await fetch(API_BASE + '/auth/panel/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone, phoneSha256, pin }),
+    body: JSON.stringify(body),
   });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.message || body.error || 'Giriş başarısız');
-  if (!body.user?.is_admin) {
-    // is_admin bilgisi login response'ta yok — /users/me çek
-    localStorage.setItem(LS_ACCESS, body.tokens.access);
-    localStorage.setItem(LS_REFRESH, body.tokens.refresh);
-    const me = await apiJson('/users/me');
-    if (!me?.user?.is_admin) {
-      logout();
-      throw new Error('Bu hesap admin değil. Panel erişimi reddedildi.');
-    }
-    localStorage.setItem(LS_USER, JSON.stringify(me.user));
-  } else {
-    localStorage.setItem(LS_ACCESS, body.tokens.access);
-    localStorage.setItem(LS_REFRESH, body.tokens.refresh);
-    localStorage.setItem(LS_USER, JSON.stringify(body.user));
+  const data = await res.json().catch(() => ({}));
+
+  // Setup gerekli → setup ekranına yönlendir
+  if (res.ok && data.setup_required) {
+    return { setupRequired: true, setupToken: data.setup_token };
   }
+
+  if (!res.ok) {
+    // TOTP eksikse özel mesaj
+    if (data.error === 'totp_required') {
+      throw new Error('Google Authenticator kodunu gir.');
+    }
+    throw new Error(data.message || data.error || 'Giriş başarısız');
+  }
+
+  localStorage.setItem(LS_ACCESS, data.tokens.access);
+  localStorage.setItem(LS_REFRESH, data.tokens.refresh);
+  localStorage.setItem(LS_USER, JSON.stringify(data.user));
+  return { ok: true };
+}
+
+// TOTP setup — /auth/panel/totp-setup çağırıp QR + secret alır
+async function fetchTotpSetup(setupToken) {
+  const res = await fetch(API_BASE + '/auth/panel/totp-setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + setupToken },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || 'Setup başlatılamadı');
+  return data; // { secret, otpauth_uri }
+}
+
+// TOTP enable — ilk kodu doğrula, geçerliyse verified_at=now() + normal token dön
+async function submitTotpEnable(setupToken, code) {
+  const res = await fetch(API_BASE + '/auth/panel/totp-enable', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + setupToken },
+    body: JSON.stringify({ code }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || 'Kod doğrulanamadı');
+
+  localStorage.setItem(LS_ACCESS, data.tokens.access);
+  localStorage.setItem(LS_REFRESH, data.tokens.refresh);
+  localStorage.setItem(LS_USER, JSON.stringify(data.user));
+}
+
+function showSetup() {
+  document.getElementById('loading').classList.add('hidden');
+  document.getElementById('login-view').classList.add('hidden');
+  document.getElementById('login-view').classList.remove('flex');
+  document.getElementById('main-view').classList.add('hidden');
+  document.getElementById('setup-view').classList.remove('hidden');
+  document.getElementById('setup-view').classList.add('flex');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1018,6 +1114,8 @@ document.getElementById('refresh-btn').addEventListener('click', () => {
   switchTab(currentTab);
 });
 
+let currentSetupToken = null;
+
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const err = document.getElementById('login-error');
@@ -1028,8 +1126,23 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   try {
     const phone = document.getElementById('phone').value;
     const pin = document.getElementById('pin').value;
-    await doLogin(phone, pin);
-    showMain();
+    const totp = document.getElementById('totp').value.replace(/\s+/g, '');
+    const result = await doLogin(phone, pin, totp);
+    if (result.setupRequired) {
+      // TOTP setup akışına geç
+      currentSetupToken = result.setupToken;
+      const setup = await fetchTotpSetup(currentSetupToken);
+      document.getElementById('secret-code').textContent = setup.secret;
+      // QR kod üret (client-side, qrcode.js CDN)
+      const canvas = document.getElementById('qr-canvas');
+      QRCode.toCanvas(canvas, setup.otpauth_uri, {
+        width: 240, margin: 1,
+        color: { dark: '#0f172a', light: '#ffffff' },
+      });
+      showSetup();
+      return;
+    }
+    if (result.ok) showMain();
   } catch (e) {
     err.textContent = e.message;
     err.classList.remove('hidden');
@@ -1037,6 +1150,41 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     btn.disabled = false;
     btn.textContent = 'Giriş Yap';
   }
+});
+
+// Setup: kodu doğrula
+document.getElementById('setup-btn').addEventListener('click', async () => {
+  const err = document.getElementById('setup-error');
+  err.classList.add('hidden');
+  const btn = document.getElementById('setup-btn');
+  const code = document.getElementById('setup-code').value.replace(/\s+/g, '');
+  if (!/^\d{6}$/.test(code)) {
+    err.textContent = '6 haneli kod gir.';
+    err.classList.remove('hidden');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Doğrulanıyor...';
+  try {
+    await submitTotpEnable(currentSetupToken, code);
+    // Setup tamam — panel'e gir
+    document.getElementById('setup-view').classList.add('hidden');
+    document.getElementById('setup-view').classList.remove('flex');
+    showMain();
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+    btn.disabled = false;
+    btn.textContent = '✓ Kodu Doğrula ve Giriş Yap';
+  }
+});
+
+// Setup: vazgeç → login'e dön
+document.getElementById('setup-cancel').addEventListener('click', () => {
+  currentSetupToken = null;
+  document.getElementById('setup-view').classList.add('hidden');
+  document.getElementById('setup-view').classList.remove('flex');
+  showLogin();
 });
 
 // Otomatik refresh — her 30 saniyede bir dashboard

@@ -32,6 +32,12 @@ async function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     const payload = verifyAccess(token);
+
+    // Kısıtlı scope'lu token'lar (TOTP setup için verilen) normal endpoint'lerde geçerli sayılmaz
+    // Sadece istisnası: kendi scope'una uygun endpoint'ler bu kontrolü kendileri yapar.
+    if (payload.scope && payload.scope !== 'access') {
+      return res.status(403).json({ error: 'scope_forbidden', message: 'Bu token bu işlem için geçerli değil.' });
+    }
     req.userId = payload.sub;
 
     // Yasaklı user tüm endpoint'lere erişemez → mobile'da 403 yakalayıp logout tetiklenir.

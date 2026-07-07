@@ -28,6 +28,11 @@ UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS gender TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS location_city TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pin_hash TEXT;
+-- Admin TOTP (Google Authenticator) — sadece web panel için 2FA
+-- admin_totp_secret: base32 gizli anahtar (Google Authenticator ile paylaşılır)
+-- admin_totp_verified_at: null iken setup henüz tamamlanmamıştır; kullanıcı ilk kodu doğrulayınca dolar
+ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_totp_secret TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_totp_verified_at TIMESTAMPTZ;
 
 -- Kullanicinin rehberi (hashlenmis)
 CREATE TABLE IF NOT EXISTS user_contacts (
