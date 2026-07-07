@@ -33,6 +33,23 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS pin_hash TEXT;
 -- admin_totp_verified_at: null iken setup henüz tamamlanmamıştır; kullanıcı ilk kodu doğrulayınca dolar
 ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_totp_secret TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_totp_verified_at TIMESTAMPTZ;
+-- Süreli askı (7 gün, 30 gün gibi). NULL ise süresiz askı veya aktif.
+-- Middleware her request'te suspended_until < now() ise otomatik status='active' yapar.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ;
+
+-- Admin audit log — kim/kimi/ne zaman/ne yaptı/neden
+-- Yasal iz + moderasyon şeffaflığı için. Silinemez (immutable log).
+CREATE TABLE IF NOT EXISTS admin_actions (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_user_id   UUID NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+  target_user_id  UUID REFERENCES users(id) ON DELETE CASCADE,
+  action          TEXT NOT NULL,   -- 'suspend' | 'ban' | 'unban' | 'note' | 'broadcast' | 'delete_content'
+  reason          TEXT NOT NULL,   -- serbest metin, zorunlu (audit için)
+  metadata        JSONB,           -- ekstra bilgiler: { duration_hours, related_report_id, listing_id, ... }
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_actions_target ON admin_actions(target_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_admin_actions_admin  ON admin_actions(admin_user_id, created_at DESC);
 
 -- Kullanicinin rehberi (hashlenmis)
 CREATE TABLE IF NOT EXISTS user_contacts (

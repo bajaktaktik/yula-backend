@@ -11,8 +11,29 @@ async function getUserStatus(userId) {
   const cached = statusCache.get(userId);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.status;
   try {
-    const r = await pool.query('SELECT status FROM users WHERE id = $1', [userId]);
-    const status = r.rows[0]?.status || null;
+    const r = await pool.query(
+      'SELECT status, suspended_until FROM users WHERE id = $1',
+      [userId]
+    );
+    if (r.rows.length === 0) return null;
+
+    let status = r.rows[0].status;
+    const until = r.rows[0].suspended_until;
+
+    // Süreli askı bitmişse otomatik aktife çevir + admin_actions'a "auto_unban" kaydı yaz
+    if (status === 'suspended' && until && new Date(until) < new Date()) {
+      await pool.query(
+        `UPDATE users SET status = 'active', suspended_until = NULL WHERE id = $1`,
+        [userId]
+      );
+      await pool.query(
+        `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+         VALUES ($1, $1, 'unban', 'Süreli askı doldu, otomatik aktif', $2)`,
+        [userId, JSON.stringify({ auto: true, expired_at: until })]
+      ).catch(() => {}); // audit fail login'i bloke etmesin
+      status = 'active';
+    }
+
     statusCache.set(userId, { status, ts: Date.now() });
     return status;
   } catch {

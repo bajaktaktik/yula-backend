@@ -408,7 +408,7 @@ router.get('/users/:id', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const u = await pool.query(
       `SELECT id, display_name, avatar_url, bio, gender, location_city, status,
-              created_at, last_active_at, onboarded_at
+              created_at, last_active_at, onboarded_at, suspended_until
        FROM users WHERE id = $1`,
       [req.params.id]
     );
@@ -457,12 +457,14 @@ router.get('/users/:id', requireAuth, requireAdmin, async (req, res, next) => {
   }
 });
 
-// POST /admin/users/:id/status — active/suspended/banned
-// Askıya alınan kullanıcı giriş yapabilir ama ilan/mesaj göremez (frontend/backend filter).
-// Ban edilen kullanıcı hiç giriş yapamaz (auth middleware'de kontrol edilir).
+// POST /admin/users/:id/status — active/suspended/banned + reason zorunlu + duration opsiyonel
+// duration_hours: null → süresiz (aktif olana kadar)
+//                sayı → o kadar saat sonra otomatik aktife dönecek
+// Audit log: admin_actions tablosuna yazılır.
 const statusSchema = Joi.object({
   status: Joi.string().valid('active', 'suspended', 'banned').required(),
-  reason: Joi.string().max(500).allow('').optional(),
+  reason: Joi.string().min(3).max(500).required(),
+  duration_hours: Joi.number().integer().min(1).max(24 * 365).allow(null).optional(),
 });
 
 router.post('/users/:id/status', requireAuth, requireAdmin, async (req, res, next) => {
@@ -475,18 +477,107 @@ router.post('/users/:id/status', requireAuth, requireAdmin, async (req, res, nex
       return res.status(400).json({ error: 'cannot_ban_self', message: 'Kendini banlayamazsın.' });
     }
 
+    // Askıya alma süreli olabilir; ban ve unban süresizdir
+    const suspendedUntil = value.status === 'suspended' && value.duration_hours
+      ? new Date(Date.now() + value.duration_hours * 3600 * 1000)
+      : null;
+
     const r = await pool.query(
-      `UPDATE users SET status = $2 WHERE id = $1
-       RETURNING id, display_name, status`,
-      [req.params.id, value.status]
+      `UPDATE users SET status = $2, suspended_until = $3 WHERE id = $1
+       RETURNING id, display_name, status, suspended_until`,
+      [req.params.id, value.status, suspendedUntil]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
 
-    // Middleware cache'ini patlat — yasak/askı hemen etkili olsun (30sn beklemesin)
+    // Middleware cache'ini patlat — hemen etkili olsun
     invalidateUserStatusCache(req.params.id);
 
-    console.log(`[admin] user_status_change id=${req.params.id} status=${value.status} by=${req.userId} reason=${value.reason || ''}`);
+    // Audit log
+    const actionMap = { active: 'unban', suspended: 'suspend', banned: 'ban' };
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        req.userId,
+        req.params.id,
+        actionMap[value.status],
+        value.reason,
+        JSON.stringify({
+          duration_hours: value.duration_hours || null,
+          suspended_until: suspendedUntil,
+        }),
+      ]
+    );
+
+    console.log(`[admin] user_status_change id=${req.params.id} status=${value.status} by=${req.userId} reason=${value.reason}`);
     res.json({ ok: true, user: r.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/users/:id/note — kullanıcı hakkında admin notu yaz
+// Audit log'a action='note' olarak eklenir. Kullanıcıya bildirim gitmez — sadece admin görür.
+const noteSchema = Joi.object({
+  note: Joi.string().min(3).max(1000).required(),
+});
+
+router.post('/users/:id/note', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = noteSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const u = await pool.query('SELECT id FROM users WHERE id = $1', [req.params.id]);
+    if (u.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason)
+       VALUES ($1, $2, 'note', $3)`,
+      [req.userId, req.params.id, value.note]
+    );
+
+    console.log(`[admin] note user=${req.params.id} by=${req.userId}`);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/users/:id/actions — bu kullanıcı hakkındaki tüm admin aksiyonları
+router.get('/users/:id/actions', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT a.id, a.action, a.reason, a.metadata, a.created_at,
+              a.admin_user_id, u.display_name AS admin_name
+       FROM admin_actions a
+       LEFT JOIN users u ON u.id = a.admin_user_id
+       WHERE a.target_user_id = $1
+       ORDER BY a.created_at DESC
+       LIMIT 100`,
+      [req.params.id]
+    );
+    res.json({ actions: r.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/actions/recent — genel moderasyon akışı (dashboard için)
+router.get('/actions/recent', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
+    const r = await pool.query(
+      `SELECT a.id, a.action, a.reason, a.metadata, a.created_at,
+              a.admin_user_id, admin.display_name AS admin_name,
+              a.target_user_id, target.display_name AS target_name
+       FROM admin_actions a
+       LEFT JOIN users admin ON admin.id = a.admin_user_id
+       LEFT JOIN users target ON target.id = a.target_user_id
+       ORDER BY a.created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    res.json({ actions: r.rows });
   } catch (err) {
     next(err);
   }
@@ -524,6 +615,17 @@ router.post('/broadcast', requireAuth, requireAdmin, async (req, res, next) => {
     );
 
     console.log(`[admin] broadcast in-app sent to ${result.rowCount} users by admin=${req.userId} title="${value.title}"`);
+
+    // Audit log — kimi/kaç kişiye/hangi mesaj (her user için ayrı satır büyür — sadece topluyı logla)
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+       VALUES ($1, NULL, 'broadcast', $2, $3)`,
+      [
+        req.userId,
+        value.title + ' — ' + value.body,
+        JSON.stringify({ recipient_count: value.userIds.length, recipient_ids: value.userIds.slice(0, 20) }),
+      ]
+    ).catch((e) => console.error('[admin] broadcast audit fail:', e.message));
 
     // Push notification de gönder — arka planda, response'u geciktirmesin
     // Cihaz token varsa ilettir; her user için ayrı çağrı (chunk'lama push service içinde)

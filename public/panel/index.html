@@ -668,16 +668,55 @@ function toggleUserSelection(userId) {
 async function openUserDetail(userId) {
   openModal('<div class="p-16 flex justify-center"><div class="spinner"></div></div>');
   try {
-    const data = await apiJson('/admin/users/' + userId);
+    // Kullanıcı detayı + admin geçmişi paralel çek
+    const [data, historyData] = await Promise.all([
+      apiJson('/admin/users/' + userId),
+      apiJson('/admin/users/' + userId + '/actions').catch(() => ({ actions: [] })),
+    ]);
+    data.admin_history = historyData?.actions || [];
     renderUserDetailModal(data);
   } catch (err) {
     openModal('<div class="p-6 text-red-600">Hata: ' + err.message + '</div>');
   }
 }
 
+function formatDateShort2(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days === 0) return 'bugün';
+  if (days === 1) return 'dün';
+  if (days < 7) return days + ' gün önce';
+  return d.toLocaleDateString('tr-TR');
+}
+
+function actionBadge(action) {
+  const map = {
+    suspend: { bg: 'bg-yellow-100', fg: 'text-yellow-800', label: '⏸️ Askı' },
+    ban: { bg: 'bg-red-100', fg: 'text-red-800', label: '🚫 Yasak' },
+    unban: { bg: 'bg-green-100', fg: 'text-green-800', label: '✅ Geri Al' },
+    note: { bg: 'bg-blue-100', fg: 'text-blue-800', label: '📝 Not' },
+    broadcast: { bg: 'bg-purple-100', fg: 'text-purple-800', label: '📨 Bildirim' },
+    delete_content: { bg: 'bg-red-100', fg: 'text-red-800', label: '🗑️ Sil' },
+  };
+  const m = map[action] || { bg: 'bg-slate-100', fg: 'text-slate-700', label: action };
+  return `<span class="text-xs px-2 py-0.5 rounded-full font-semibold ${m.bg} ${m.fg}">${m.label}</span>`;
+}
+
 function renderUserDetailModal(data) {
-  const { user, stats, recent_listings, recent_reports } = data;
+  const { user, stats, recent_listings, recent_reports, admin_history } = data;
   const badge = statusBadge(user.status);
+
+  // Süreli askı bilgisi
+  let suspInfo = '';
+  if (user.status === 'suspended' && user.suspended_until) {
+    const until = new Date(user.suspended_until);
+    const hoursLeft = Math.max(0, Math.round((until.getTime() - Date.now()) / 3600000));
+    suspInfo = `<div class="text-xs text-yellow-800 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded mt-1">
+      ⏱️ ${until.toLocaleString('tr-TR')} (${hoursLeft} saat kaldı)
+    </div>`;
+  }
+
   const html = `
     <div class="p-6 border-b border-slate-200 flex items-start gap-4">
       <div class="w-16 h-16 rounded-2xl bg-[#1F4E79] text-white flex items-center justify-center font-bold text-3xl flex-shrink-0">
@@ -688,6 +727,7 @@ function renderUserDetailModal(data) {
           <div class="text-xl font-bold">${user.display_name || '(isimsiz)'}</div>
           ${badge}
         </div>
+        ${suspInfo}
         ${user.bio ? '<div class="text-sm text-slate-600 mt-1">' + user.bio + '</div>' : ''}
         <div class="text-xs text-slate-400 mt-2 font-mono select-all">${user.id}</div>
       </div>
@@ -736,8 +776,32 @@ function renderUserDetailModal(data) {
         </div>`).join('')}
     </div>` : ''}
 
-    <div class="p-6 flex flex-wrap gap-2">
-      ${userActionButtons(user)}
+    ${admin_history && admin_history.length > 0 ? `
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Admin Geçmişi (${admin_history.length})</div>
+      <div class="max-h-64 overflow-y-auto space-y-2">
+        ${admin_history.map(a => `
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+            <div class="flex items-center gap-2 mb-1">
+              ${actionBadge(a.action)}
+              <span class="text-xs text-slate-500 ml-auto">${new Date(a.created_at).toLocaleString('tr-TR')}</span>
+            </div>
+            <div class="text-sm text-slate-700 whitespace-pre-wrap">${a.reason}</div>
+            ${a.metadata?.duration_hours ? `<div class="text-xs text-slate-500 mt-1">Süre: ${a.metadata.duration_hours} saat</div>` : ''}
+            <div class="text-xs text-slate-400 mt-1">Uygulayan: ${a.admin_name || 'Sistem'}</div>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    <div class="p-6">
+      <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Aksiyonlar</div>
+      <div class="flex flex-wrap gap-2 mb-3">
+        ${userActionButtons(user)}
+        <button onclick="openNoteDialog('${user.id}', '${(user.display_name || '').replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold hover:bg-blue-200">
+          📝 Not Yaz
+        </button>
+      </div>
     </div>
   `;
   document.getElementById('modal-content').innerHTML = html;
@@ -754,13 +818,13 @@ function statCell(icon, label, value, color) {
 function userActionButtons(user) {
   const btns = [];
   if (user.status === 'active') {
-    btns.push(`<button onclick="changeUserStatus('${user.id}', 'suspended', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-yellow-100 text-yellow-800 font-semibold hover:bg-yellow-200">⏸️ Askıya Al</button>`);
-    btns.push(`<button onclick="changeUserStatus('${user.id}', 'banned', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🚫 Kalıcı Yasakla</button>`);
+    btns.push(`<button onclick="openStatusDialog('${user.id}', 'suspended', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-yellow-100 text-yellow-800 font-semibold hover:bg-yellow-200">⏸️ Askıya Al</button>`);
+    btns.push(`<button onclick="openStatusDialog('${user.id}', 'banned', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🚫 Kalıcı Yasakla</button>`);
   } else if (user.status === 'suspended') {
-    btns.push(`<button onclick="changeUserStatus('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">✅ Askıdan Al</button>`);
-    btns.push(`<button onclick="changeUserStatus('${user.id}', 'banned', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🚫 Kalıcı Yasakla</button>`);
+    btns.push(`<button onclick="openStatusDialog('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">✅ Askıdan Al</button>`);
+    btns.push(`<button onclick="openStatusDialog('${user.id}', 'banned', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🚫 Kalıcı Yasakla</button>`);
   } else if (user.status === 'banned') {
-    btns.push(`<button onclick="changeUserStatus('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">🔓 Yasağı Kaldır</button>`);
+    btns.push(`<button onclick="openStatusDialog('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">🔓 Yasağı Kaldır</button>`);
   }
   return btns.join('');
 }
@@ -852,20 +916,148 @@ async function sendBroadcast() {
   }
 }
 
-async function changeUserStatus(userId, status, name) {
-  const labels = { active: 'aktif', suspended: 'askıya al', banned: 'kalıcı yasakla' };
-  if (!confirm(name + ' → "' + labels[status] + '"? Onaylıyor musun?')) return;
+// Askı için süre seçenekleri (saat cinsinden)
+const SUSPEND_DURATIONS = [
+  { hours: 24, label: '1 gün' },
+  { hours: 24 * 3, label: '3 gün' },
+  { hours: 24 * 7, label: '7 gün' },
+  { hours: 24 * 30, label: '30 gün' },
+  { hours: null, label: 'Süresiz' },
+];
+
+function openStatusDialog(userId, status, name) {
+  const labels = { active: 'Aktif Yap / Geri Al', suspended: 'Askıya Al', banned: 'Kalıcı Yasakla' };
+  const showDuration = status === 'suspended';
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">${labels[status]}</div>
+        <div class="text-xs text-slate-500 mt-1">${name}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-4">
+      ${showDuration ? `
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-2">Süre</label>
+        <div class="grid grid-cols-3 gap-2">
+          ${SUSPEND_DURATIONS.map((d, i) => `
+            <button type="button" data-dur="${d.hours === null ? '' : d.hours}"
+              class="dur-btn px-3 py-2 border border-slate-300 rounded-lg text-sm ${i === 2 ? 'bg-[#1F4E79] text-white border-[#1F4E79]' : 'bg-white'}">
+              ${d.label}
+            </button>`).join('')}
+        </div>
+      </div>` : ''}
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">
+          Gerekçe <span class="text-red-600">*</span>
+        </label>
+        <textarea id="status-reason" rows="3" required minlength="3" maxlength="500"
+          placeholder="${status === 'active' ? 'Neden geri alıyorsun?' : 'Hangi kural ihlali? Neden bu aksiyon?'}"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79] resize-none"></textarea>
+        <div class="text-xs text-slate-500 mt-1">En az 3 karakter. Audit log'da kalıcı kayıt.</div>
+      </div>
+      <div id="status-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitStatusChange('${userId}', '${status}')"
+        class="flex-1 px-4 py-3 rounded-lg ${status === 'banned' ? 'bg-red-600 hover:bg-red-700' : status === 'suspended' ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-green-600 hover:bg-green-700'} text-white font-semibold">
+        Uygula
+      </button>
+    </div>
+  `;
+  openModal(html);
+  // Duration button state (mevcut default: index 2 = 7 gün)
+  if (showDuration) {
+    let selectedDur = 24 * 7;
+    window._selectedDuration = selectedDur;
+    document.querySelectorAll('.dur-btn').forEach(b => {
+      b.addEventListener('click', () => {
+        document.querySelectorAll('.dur-btn').forEach(x => x.classList.remove('bg-[#1F4E79]', 'text-white', 'border-[#1F4E79]'));
+        b.classList.add('bg-[#1F4E79]', 'text-white', 'border-[#1F4E79]');
+        const raw = b.dataset.dur;
+        window._selectedDuration = raw === '' ? null : parseInt(raw, 10);
+      });
+    });
+  }
+}
+
+async function submitStatusChange(userId, status) {
+  const reason = document.getElementById('status-reason').value.trim();
+  const err = document.getElementById('status-error');
+  err.classList.add('hidden');
+  if (reason.length < 3) {
+    err.textContent = 'Gerekçe en az 3 karakter olmalı.';
+    err.classList.remove('hidden');
+    return;
+  }
+  const body = { status, reason };
+  if (status === 'suspended') {
+    body.duration_hours = window._selectedDuration;
+  }
   try {
     await apiJson('/admin/users/' + userId + '/status', {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(body),
     });
     closeModal();
     loadUsers();
-    // Dashboard'a etkisi olacak — yenile
     if (currentTab === 'dashboard') renderDashboard();
-  } catch (err) {
-    alert('Hata: ' + err.message);
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  }
+}
+
+function openNoteDialog(userId, name) {
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">📝 Kullanıcı Notu</div>
+        <div class="text-xs text-slate-500 mt-1">${name}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-3">
+      <div class="text-sm text-slate-500 italic">
+        Not kullanıcıya gösterilmez. Sadece admin'ler görür. Audit log'da kalıcıdır.
+      </div>
+      <textarea id="note-text" rows="4" minlength="3" maxlength="1000"
+        placeholder="Örn: 3 kez uyarıldı, bir daha ihlal olursa ban"
+        class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79] resize-none"></textarea>
+      <div id="note-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitNote('${userId}')" class="flex-1 px-4 py-3 rounded-lg bg-[#1F4E79] hover:bg-[#183a5c] text-white font-semibold">
+        Kaydet
+      </button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function submitNote(userId) {
+  const note = document.getElementById('note-text').value.trim();
+  const err = document.getElementById('note-error');
+  err.classList.add('hidden');
+  if (note.length < 3) {
+    err.textContent = 'Not en az 3 karakter olmalı.';
+    err.classList.remove('hidden');
+    return;
+  }
+  try {
+    await apiJson('/admin/users/' + userId + '/note', {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    });
+    closeModal();
+    // Detayı yeniden aç ki yeni not görünsün
+    openUserDetail(userId);
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
   }
 }
 
