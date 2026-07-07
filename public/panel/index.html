@@ -1106,8 +1106,8 @@ function renderListings() {
           ${f.label}
         </button>`).join('')}
     </div>
-    <div id="listings-list" class="grid grid-cols-2 gap-3">
-      <div class="col-span-2 p-16 flex justify-center"><div class="spinner"></div></div>
+    <div id="listings-list" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+      <div class="col-span-full p-16 flex justify-center"><div class="spinner"></div></div>
     </div>
   `;
 
@@ -1140,7 +1140,7 @@ async function loadListings() {
     const rows = data?.listings || [];
     currentListings = rows;
     if (rows.length === 0) {
-      list.innerHTML = '<div class="col-span-2 p-12 text-center text-slate-400">Sonuç yok</div>';
+      list.innerHTML = '<div class="col-span-full p-12 text-center text-slate-400">Sonuç yok</div>';
       return;
     }
     list.innerHTML = rows.map(l => listingCard(l)).join('');
@@ -1148,7 +1148,7 @@ async function loadListings() {
       el.addEventListener('click', () => openListingDetail(el.dataset.listingId));
     });
   } catch (err) {
-    list.innerHTML = '<div class="col-span-2 p-6 text-red-600">Hata: ' + err.message + '</div>';
+    list.innerHTML = '<div class="col-span-full p-6 text-red-600">Hata: ' + err.message + '</div>';
   }
 }
 
@@ -1157,22 +1157,21 @@ function listingCard(l) {
   const isFeatured = l.featured_until && new Date(l.featured_until) > new Date();
   const cover = l.cover_photo || '';
   return `
-    <div data-listing-id="${l.id}" class="bg-white border ${isRemoved ? 'border-red-300 bg-red-50' : isFeatured ? 'border-amber-300' : 'border-slate-200'} rounded-xl overflow-hidden cursor-pointer hover:shadow-md transition-shadow">
-      <div class="aspect-square bg-slate-100 relative overflow-hidden">
-        ${cover ? `<img src="${cover}" class="w-full h-full object-cover" />` : '<div class="w-full h-full flex items-center justify-center text-4xl text-slate-300">📦</div>'}
-        ${isFeatured ? '<div class="absolute top-2 left-2 bg-amber-500 text-white text-xs px-2 py-0.5 rounded-full font-bold">⭐ ÖNE ÇIKAN</div>' : ''}
-        ${isRemoved ? '<div class="absolute inset-0 bg-red-500/40 flex items-center justify-center"><span class="bg-red-600 text-white text-xs px-3 py-1 rounded font-bold">KALDIRILDI</span></div>' : ''}
-        ${l.reports_count > 0 ? '<div class="absolute top-2 right-2 bg-red-600 text-white text-xs px-2 py-0.5 rounded-full font-bold">⚠️ ' + l.reports_count + '</div>' : ''}
+    <div data-listing-id="${l.id}" class="bg-white border ${isRemoved ? 'border-red-300 bg-red-50' : isFeatured ? 'border-amber-300' : 'border-slate-200'} rounded-lg overflow-hidden cursor-pointer hover:shadow-md hover:border-slate-400 transition-all">
+      <div class="aspect-[4/3] bg-slate-100 relative overflow-hidden">
+        ${cover ? `<img src="${cover}" class="w-full h-full object-cover" loading="lazy" />` : '<div class="w-full h-full flex items-center justify-center text-2xl text-slate-300">📦</div>'}
+        ${isFeatured ? '<div class="absolute top-1 left-1 bg-amber-500 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">⭐</div>' : ''}
+        ${isRemoved ? '<div class="absolute inset-0 bg-red-500/40 flex items-center justify-center"><span class="bg-red-600 text-white text-[10px] px-2 py-0.5 rounded font-bold">KALDIRILDI</span></div>' : ''}
+        ${l.reports_count > 0 ? '<div class="absolute top-1 right-1 bg-red-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">⚠️ ' + l.reports_count + '</div>' : ''}
       </div>
-      <div class="p-3">
-        <div class="font-semibold text-sm truncate">${l.title}</div>
-        <div class="text-lg font-bold text-[#1F4E79] mt-1">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
-        <div class="text-xs text-slate-500 truncate mt-1">
-          👤 ${l.seller_name || '?'}
-          ${l.location_city ? ' · 📍 ' + l.location_city : ''}
+      <div class="p-2">
+        <div class="font-medium text-xs truncate leading-tight">${l.title}</div>
+        <div class="text-sm font-bold text-[#1F4E79] mt-0.5">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
+        <div class="text-[10px] text-slate-500 truncate mt-0.5">
+          ${l.seller_name || '?'}${l.location_city ? ' · ' + l.location_city : ''}
         </div>
-        <div class="text-xs text-slate-400 mt-0.5">
-          ${l.category_name || '(kategori yok)'} · ${formatDateShort(l.created_at)}
+        <div class="text-[10px] text-slate-400 truncate">
+          ${l.category_name || '—'} · ${formatDateShort(l.created_at)}
         </div>
       </div>
     </div>
