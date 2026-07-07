@@ -300,6 +300,25 @@ function metricCard(icon, label, value, sub, borderColor) {
     </div>`;
 }
 
+// Rehber sağlığı için özel kart — % yüzde + tıklanabilir filtre
+function lowContactsCard(icon, label, value, total, borderColor, quickFilter) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  const clickable = !!quickFilter;
+  return `
+    <div class="card card-lg ${clickable ? 'cursor-pointer hover:bg-slate-50' : ''}"
+         style="border-left-color: ${borderColor};"
+         ${clickable ? `data-quick-filter="${quickFilter}"` : ''}>
+      <div class="flex items-center gap-2 text-xs text-slate-500 font-semibold uppercase tracking-wide">
+        <span>${icon}</span> ${label}
+      </div>
+      <div class="flex items-baseline gap-2 mt-2">
+        <div class="text-3xl font-extrabold">${(value ?? 0).toLocaleString('tr-TR')}</div>
+        <div class="text-sm text-slate-500">%${pct}</div>
+      </div>
+      ${clickable ? '<div class="text-xs text-blue-600 mt-1">→ Listeye git</div>' : ''}
+    </div>`;
+}
+
 async function renderDashboard() {
   const c = document.getElementById('content');
   c.innerHTML = '<div class="flex items-center justify-center py-16"><div class="spinner"></div></div>';
@@ -363,13 +382,34 @@ async function renderDashboard() {
       </div>
 
       <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Dağılım</div>
-      <div class="grid grid-cols-4 gap-4">
+      <div class="grid grid-cols-4 gap-4 mb-6">
         ${metricCard('♀️', 'Kadın', d.users_female, null, '#ec4899')}
         ${metricCard('♂️', 'Erkek', d.users_male, null, '#2563eb')}
         ${metricCard('🟢', 'Aktif İlan', d.listings_active, null, '#16a34a')}
         ${metricCard('📚', 'Toplam İlan', d.listings_total, null, '#64748b')}
       </div>
+
+      <div class="mb-2 flex items-center gap-2">
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Rehber Sağlığı</span>
+        <span class="text-xs text-slate-400 italic">(network effect göstergesi)</span>
+      </div>
+      <div class="grid grid-cols-4 gap-4">
+        ${metricCard('📇', 'Ortalama Rehber', d.avg_contacts, {
+          text: 'Medyan: ' + (d.median_contacts ?? 0),
+          color: 'text-slate-500',
+        }, '#0891b2')}
+        ${lowContactsCard('❗', 'Boş Rehber (0)', d.users_no_contacts, d.users_total, '#dc2626', 'low_contacts')}
+        ${lowContactsCard('⚠️', 'Az Rehber (1-4)', d.users_low_contacts, d.users_total, '#f59e0b', 'low_contacts')}
+        ${lowContactsCard('✅', 'Sağlıklı (20+)', d.users_healthy_contacts, d.users_total, '#16a34a', null)}
+      </div>
     `;
+    // "Az rehberli" kartlarına click handler ekle → Kullanıcılar sekmesine göndersin
+    c.querySelectorAll('[data-quick-filter]').forEach(el => {
+      el.addEventListener('click', () => {
+        usersState = { q: '', status: 'all', sortBy: 'low_contacts' };
+        switchTab('users');
+      });
+    });
     document.getElementById('last-updated').textContent = 'Güncelleme: ' + new Date().toLocaleTimeString('tr-TR');
   } catch (err) {
     c.innerHTML = '<div class="text-red-600 bg-red-50 border border-red-200 rounded-lg p-4">Yüklenemedi: ' + err.message + '</div>';
@@ -390,12 +430,18 @@ function updateReportsBadge(n) {
 // Kullanıcılar
 // ═══════════════════════════════════════════════════════════════
 
-let usersState = { q: '', status: 'all' };
+let usersState = { q: '', status: 'all', sortBy: 'recent' };
 
 function usersView() {
   const c = document.getElementById('content');
+  const sortOptions = [
+    { key: 'recent', label: '🕒 Son Aktif' },
+    { key: 'low_contacts', label: '📇 Az Rehberli' },
+    { key: 'reports', label: '⚠️ Şikayet Alan' },
+    { key: 'listings', label: '📦 Çok İlanlı' },
+  ];
   c.innerHTML = `
-    <div class="mb-4 flex flex-wrap gap-3 items-center">
+    <div class="mb-3 flex flex-wrap gap-3 items-center">
       <input id="user-search" placeholder="İsim veya kullanıcı ID"
         value="${usersState.q.replace(/"/g, '&quot;')}"
         class="flex-1 min-w-[240px] px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79]" />
@@ -406,6 +452,13 @@ function usersView() {
           </button>
         `).join('')}
       </div>
+    </div>
+    <div class="mb-4 flex flex-wrap gap-1 items-center">
+      <span class="text-xs text-slate-500 mr-2">Sırala:</span>
+      ${sortOptions.map(o => `
+        <button data-sort="${o.key}" class="sort-chip px-3 py-1.5 text-xs rounded-lg border ${usersState.sortBy === o.key ? 'bg-[#1F4E79] text-white border-[#1F4E79]' : 'bg-white border-slate-300 text-slate-700'}">
+          ${o.label}
+        </button>`).join('')}
     </div>
     <div id="users-list" class="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div class="p-16 flex justify-center"><div class="spinner"></div></div>
@@ -428,6 +481,13 @@ function usersView() {
       loadUsers();
     });
   });
+  document.querySelectorAll('.sort-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      usersState.sortBy = b.dataset.sort;
+      usersView();
+      loadUsers();
+    });
+  });
 
   loadUsers();
 }
@@ -438,6 +498,7 @@ async function loadUsers() {
     const params = new URLSearchParams({ limit: '80' });
     if (usersState.q) params.set('q', usersState.q);
     if (usersState.status !== 'all') params.set('status', usersState.status);
+    if (usersState.sortBy && usersState.sortBy !== 'recent') params.set('sortBy', usersState.sortBy);
     const data = await apiJson('/admin/users?' + params.toString());
     const users = data?.users || [];
     if (users.length === 0) {
@@ -469,6 +530,14 @@ function formatDateShort(iso) {
   return d.toLocaleDateString('tr-TR');
 }
 
+function contactBadge(n) {
+  if (n == null) return '';
+  if (n === 0) return '<span class="text-red-600 font-bold">📇 0 (boş)</span>';
+  if (n < 5) return '<span class="text-orange-600 font-bold">📇 ' + n + '</span>';
+  if (n < 20) return '<span class="text-yellow-700">📇 ' + n + '</span>';
+  return '<span>📇 ' + n + '</span>';
+}
+
 function userRow(u) {
   return `
     <div data-user-id="${u.id}" class="flex items-center gap-3 px-4 py-3 border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
@@ -482,6 +551,7 @@ function userRow(u) {
         </div>
         <div class="text-xs text-slate-500 flex items-center gap-3 mt-0.5">
           <span>📦 ${u.active_listing_count}</span>
+          ${contactBadge(u.contacts_count)}
           ${u.reports_against > 0 ? '<span class="text-red-600 font-bold">⚠️ ' + u.reports_against + '</span>' : ''}
           ${u.location_city ? '<span>📍 ' + u.location_city + '</span>' : ''}
           <span class="ml-auto italic">${formatDateShort(u.last_active_at)}</span>

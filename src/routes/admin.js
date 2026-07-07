@@ -289,7 +289,28 @@ router.get('/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM users WHERE gender = 'male')                                                  AS users_male,
 
         -- KONUŞMA
-        (SELECT COUNT(*)::int FROM conversations)                                                                AS conversations_total
+        (SELECT COUNT(*)::int FROM conversations)                                                                AS conversations_total,
+
+        -- REHBER SAĞLIĞI (network effect için kritik)
+        -- Ortalama contacts sayısı (0 rehberli hariç — sadece sync yapmış kullanıcılar)
+        (SELECT COALESCE(AVG(cnt)::int, 0) FROM (
+           SELECT COUNT(*)::int AS cnt FROM user_contacts GROUP BY user_id
+         ) t)                                                                                                     AS avg_contacts,
+        -- Median (çok az kişi ile çok fazla arasındaki gerçek orta)
+        (SELECT COALESCE((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY cnt))::int, 0) FROM (
+           SELECT COUNT(*)::int AS cnt FROM user_contacts GROUP BY user_id
+         ) t)                                                                                                     AS median_contacts,
+        -- Hiç rehber paylaşmamış kullanıcı (0 satır user_contacts)
+        (SELECT COUNT(*)::int FROM users u
+         WHERE NOT EXISTS (SELECT 1 FROM user_contacts uc WHERE uc.user_id = u.id))                               AS users_no_contacts,
+        -- Az rehberli — 1-4 arası (Selected Contacts patern)
+        (SELECT COUNT(*)::int FROM (
+           SELECT user_id FROM user_contacts GROUP BY user_id HAVING COUNT(*) BETWEEN 1 AND 4
+         ) t)                                                                                                     AS users_low_contacts,
+        -- Sağlıklı rehberli — 20+
+        (SELECT COUNT(*)::int FROM (
+           SELECT user_id FROM user_contacts GROUP BY user_id HAVING COUNT(*) >= 20
+         ) t)                                                                                                     AS users_healthy_contacts
     `);
     res.json(r.rows[0]);
   } catch (err) {
@@ -303,6 +324,7 @@ router.get('/users', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const q = String(req.query.q || '').trim();
     const status = String(req.query.status || 'all');
+    const sortBy = String(req.query.sortBy || 'recent'); // recent | low_contacts | reports | listings
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
     const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
 
@@ -327,6 +349,23 @@ router.get('/users', requireAuth, requireAdmin, async (req, res, next) => {
     }
     const whereSql = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
+    // Sıralama — dashboard'dan gelen "Az Rehberli" tıklaması için low_contacts özel
+    let orderBy;
+    switch (sortBy) {
+      case 'low_contacts':
+        // 0-4 rehberli olanlar önce, kayıt tarihi yeni olanlar önde
+        orderBy = 'contacts_count ASC, u.created_at DESC';
+        break;
+      case 'reports':
+        orderBy = 'reports_against DESC, u.last_active_at DESC NULLS LAST';
+        break;
+      case 'listings':
+        orderBy = 'active_listing_count DESC, u.last_active_at DESC NULLS LAST';
+        break;
+      default: // 'recent'
+        orderBy = 'u.last_active_at DESC NULLS LAST';
+    }
+
     params.push(limit);
     const limitIdx = params.length;
     params.push(offset);
@@ -337,10 +376,11 @@ router.get('/users', requireAuth, requireAdmin, async (req, res, next) => {
          u.id, u.display_name, u.avatar_url, u.gender, u.location_city, u.status,
          u.created_at, u.last_active_at,
          (SELECT COUNT(*)::int FROM listings WHERE user_id = u.id AND status = 'active') AS active_listing_count,
-         (SELECT COUNT(*)::int FROM reports  WHERE target_type = 'user' AND target_id = u.id) AS reports_against
+         (SELECT COUNT(*)::int FROM reports  WHERE target_type = 'user' AND target_id = u.id) AS reports_against,
+         (SELECT COUNT(*)::int FROM user_contacts WHERE user_id = u.id) AS contacts_count
        FROM users u
        ${whereSql}
-       ORDER BY u.last_active_at DESC NULLS LAST
+       ORDER BY ${orderBy}
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     );
