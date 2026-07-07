@@ -373,7 +373,7 @@ router.get('/users/:id', requireAuth, requireAdmin, async (req, res, next) => {
          (SELECT COUNT(*)::int FROM reports    WHERE reporter_id = $1)                        AS reports_by,
          (SELECT COUNT(*)::int FROM user_contacts WHERE user_id = $1)                         AS contacts_count,
          (SELECT COUNT(*)::int FROM device_tokens WHERE user_id = $1)                         AS devices_count,
-         (SELECT COUNT(*)::int FROM user_blocks WHERE blocker_id = $1 OR blocked_id = $1)     AS blocks_count`,
+         (SELECT COUNT(*)::int FROM blocks WHERE blocker_id = $1 OR blocked_id = $1)     AS blocks_count`,
       [req.params.id]
     );
 
