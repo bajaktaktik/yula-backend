@@ -323,23 +323,19 @@ router.post('/panel/login', async (req, res, next) => {
     const okPin = await bcrypt.compare(value.pin, u.pin_hash);
     if (!okPin) return res.status(401).json({ error: 'wrong_pin', message: 'PIN hatalı.' });
 
-    // TOTP durumu
+    // TOTP durumu — kurulmamış hesap panele giremez. Setup akışı UI'den kaldırıldı.
+    // Yeni admin kurulumu SADECE server yöneticisi tarafından manuel yapılır (SQL / CLI).
     const hasVerifiedTotp = u.admin_totp_secret && u.admin_totp_verified_at;
-
     if (!hasVerifiedTotp) {
-      // Setup gerekli — geçici token (kısa ömürlü) döndür, kullanıcı /panel/totp-setup çağıracak
-      // Bu geçici token'ın scope'u sadece TOTP kurulumu; genel access gibi kullanılamaz
-      const setupToken = signAccess(u.id, { scope: 'totp_setup', expiresIn: '10m' });
-      return res.status(200).json({
-        setup_required: true,
-        setup_token: setupToken,
-        message: 'İlk giriş — Google Authenticator kurulumu gerekli.',
+      return res.status(403).json({
+        error: 'totp_not_configured',
+        message: 'Panel erişimi hazır değil. Sistem yöneticisine bildir.',
       });
     }
 
-    // TOTP zorunlu
+    // TOTP zorunlu — boş kabul edilmez
     if (!value.totp) {
-      return res.status(400).json({ error: 'totp_required', message: 'Google Authenticator kodu gerekli.' });
+      return res.status(400).json({ error: 'totp_required', message: 'Doğrulama kodu gerekli.' });
     }
     const okTotp = authenticator.check(value.totp, u.admin_totp_secret);
     if (!okTotp) {
@@ -362,87 +358,8 @@ router.post('/panel/login', async (req, res, next) => {
   }
 });
 
-// Kullanıcı setup_token ile bu endpoint'i çağırır — QR + secret döner
-// Frontend kullanıcıya QR kodu gösterir, kullanıcı Google Authenticator'a ekler.
-router.post('/panel/totp-setup', async (req, res, next) => {
-  try {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (!token) return res.status(401).json({ error: 'unauthorized' });
-    let payload;
-    try { payload = verifyAccess(token); } catch { return res.status(401).json({ error: 'invalid_token' }); }
-    if (payload.scope !== 'totp_setup') return res.status(403).json({ error: 'wrong_scope' });
-
-    const userId = payload.sub;
-    if (!ADMIN_USER_IDS_SET.has(userId)) return res.status(403).json({ error: 'not_admin' });
-
-    // Yeni secret üret + DB'ye ilk kez yaz (verified_at = null)
-    // Eğer önceden bir secret varsa (partial setup) üzerine yazılır — kullanıcı yeni QR kodu görür.
-    const secret = authenticator.generateSecret();
-    await pool.query(
-      `UPDATE users SET admin_totp_secret = $1, admin_totp_verified_at = NULL WHERE id = $2`,
-      [secret, userId]
-    );
-
-    // Kullanıcıya gösterilecek isim (Authenticator uygulamasında görünür)
-    const u = await pool.query('SELECT display_name FROM users WHERE id = $1', [userId]);
-    const label = 'Abadan Admin (' + (u.rows[0]?.display_name || userId.slice(0, 8)) + ')';
-    const issuer = 'Abadan';
-    const otpauthUri = authenticator.keyuri(label, issuer, secret);
-    // QR kodu server-side üret — client CDN'e ihtiyaç yok
-    const qrDataUrl = await QRCode.toDataURL(otpauthUri, {
-      margin: 1, width: 260, color: { dark: '#0f172a', light: '#ffffff' },
-    });
-
-    console.log(`[auth] totp setup started for admin=${userId}`);
-    res.json({ secret, otpauth_uri: otpauthUri, qr_data_url: qrDataUrl });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Kullanıcı Google Authenticator'a eklediği ilk kodu bu endpoint'te doğrular
-// Doğruysa verified_at = now() olur; sonraki loginlerde TOTP zorunlu.
-router.post('/panel/totp-enable', async (req, res, next) => {
-  try {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (!token) return res.status(401).json({ error: 'unauthorized' });
-    let payload;
-    try { payload = verifyAccess(token); } catch { return res.status(401).json({ error: 'invalid_token' }); }
-    if (payload.scope !== 'totp_setup') return res.status(403).json({ error: 'wrong_scope' });
-
-    const userId = payload.sub;
-    if (!ADMIN_USER_IDS_SET.has(userId)) return res.status(403).json({ error: 'not_admin' });
-
-    const { code } = req.body || {};
-    if (!code || !/^\d{6}$/.test(String(code))) return res.status(400).json({ error: 'invalid_code' });
-
-    const u = await pool.query(
-      'SELECT id, display_name, avatar_url, bio, gender, location_city, admin_totp_secret FROM users WHERE id = $1',
-      [userId]
-    );
-    if (u.rows.length === 0 || !u.rows[0].admin_totp_secret) {
-      return res.status(400).json({ error: 'setup_missing', message: 'Önce TOTP setup çağır.' });
-    }
-
-    const ok = authenticator.check(String(code), u.rows[0].admin_totp_secret);
-    if (!ok) return res.status(401).json({ error: 'wrong_code', message: 'Kod hatalı.' });
-
-    await pool.query('UPDATE users SET admin_totp_verified_at = now() WHERE id = $1', [userId]);
-    console.log(`[auth] totp verified & enabled for admin=${userId}`);
-
-    // Setup tamamlandı — normal token'ları dön (kullanıcı hemen giriş yapmış olur)
-    const user = { ...u.rows[0], is_admin: true };
-    delete user.admin_totp_secret;
-    res.json({
-      user,
-      tokens: { access: signAccess(userId), refresh: signRefresh(userId) },
-    });
-  } catch (err) {
-    next(err);
-  }
-});
+// NOT: TOTP setup endpoint'leri (totp-setup / totp-enable) UI'den kaldırıldı.
+// Yeni admin kurulumu için: scripts/setup-admin-totp.js CLI script kullan.
 
 router.post('/refresh', async (req, res) => {
   try {
