@@ -84,11 +84,14 @@ router.get('/shares/:token', async (req, res, next) => {
       return res.status(410).json({ error: 'listing_not_available' });
     }
 
-    // View count artır (mobile'dan da gelirse burdan sayılır)
-    await pool.query(
-      `UPDATE listing_shares SET view_count = view_count + 1, last_viewed_at = now() WHERE token = $1`,
-      [req.params.token]
-    );
+    // View count artır (mobile'dan da gelirse burdan sayılır) — bot değilse
+    const ua = req.headers['user-agent'] || '';
+    if (!isBot(ua)) {
+      await pool.query(
+        `UPDATE listing_shares SET view_count = view_count + 1, last_viewed_at = now() WHERE token = $1`,
+        [req.params.token]
+      );
+    }
 
     res.json({
       share_id: s.id,
@@ -99,6 +102,14 @@ router.get('/shares/:token', async (req, res, next) => {
     next(err);
   }
 });
+
+// Bot / crawler tespiti — WhatsApp, Facebook, Twitter, Slack, LinkedIn, Google, Bing gibi
+// preview crawler'ları view sayacına dahil edilmez. Aksi halde her paylaşımda 3-5 fake view olur.
+const BOT_UA_REGEX = /(bot|crawler|spider|whatsapp|facebookexternalhit|twitterbot|slackbot|linkedinbot|discordbot|telegrambot|skypeuripreview|googleimageproxy|applebot|bingpreview|duckduckbot|yandeximages|preview|scrape|http-client|curl|wget|node-fetch|axios|python-requests|okhttp|java|go-http-client)/i;
+function isBot(userAgent) {
+  if (!userAgent) return true; // UA yoksa büyük ihtimalle bot
+  return BOT_UA_REGEX.test(userAgent);
+}
 
 // GET /i/:token — public HTML preview sayfası (WhatsApp'ta güzel görünsün diye OG meta ile)
 router.get('/i/:token', async (req, res) => {
@@ -117,13 +128,16 @@ router.get('/i/:token', async (req, res) => {
       [req.params.token]
     );
 
-    // View count artır (sayfa açıldı)
-    if (r.rows.length > 0) {
+    // View count artır — SADECE gerçek kullanıcı ziyareti için (bot preview'ları hariç)
+    const ua = req.headers['user-agent'] || '';
+    const isRealVisitor = !isBot(ua);
+    if (r.rows.length > 0 && isRealVisitor) {
       pool.query(
         `UPDATE listing_shares SET view_count = view_count + 1, last_viewed_at = now() WHERE token = $1`,
         [req.params.token]
       ).catch(() => {});
     }
+    console.log(`[share] view token=${req.params.token} bot=${!isRealVisitor} ua="${ua.slice(0, 60)}"`);
 
     const notFound = r.rows.length === 0 || r.rows[0].admin_removed_at || r.rows[0].status !== 'active';
     const listing = r.rows[0];
