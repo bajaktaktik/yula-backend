@@ -13,9 +13,11 @@ const { requireAuth } = require('../auth/middleware');
 const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
-const ADMIN_USER_IDS_SET = new Set(
-  (process.env.ADMIN_USER_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)
-);
+// Admin bilgisi artık users.role kolonundan gelir. DB'ye tek sorgu ile bakılır.
+async function isUserAdmin(userId) {
+  const r = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+  return r.rows[0]?.role === 'admin';
+}
 // TOTP: tolerans ±1 pencere (30sn öncesi/sonrası kabul) — cihaz saati kaymalarına dayanıklı
 authenticator.options = { window: 1, step: 30 };
 
@@ -306,7 +308,7 @@ router.post('/panel/login', async (req, res, next) => {
 
     const phoneHash = rehashClientHash(value.phoneSha256);
     const q = await pool.query(
-      `SELECT id, display_name, avatar_url, bio, gender, location_city, pin_hash, status,
+      `SELECT id, display_name, avatar_url, bio, gender, location_city, pin_hash, status, role,
               admin_totp_secret, admin_totp_verified_at
        FROM users WHERE phone_hash = $1`,
       [phoneHash]
@@ -314,7 +316,7 @@ router.post('/panel/login', async (req, res, next) => {
     if (q.rows.length === 0) return res.status(404).json({ error: 'user_not_found', message: 'Hesap yok.' });
     const u = q.rows[0];
     if (u.status === 'banned') return res.status(403).json({ error: 'user_banned', message: 'Hesabınız yasaklanmıştır.' });
-    if (!ADMIN_USER_IDS_SET.has(u.id)) {
+    if (u.role !== 'admin') {
       return res.status(403).json({ error: 'not_admin', message: 'Panel erişimi reddedildi.' });
     }
 

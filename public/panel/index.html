@@ -101,6 +101,9 @@
       <button data-tab="system" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>🔧</span> Sistem
       </button>
+      <button data-tab="ops" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>⚙️</span> Operasyon
+      </button>
     </nav>
     <div class="p-3 border-t border-slate-800">
       <div id="user-info" class="text-xs text-slate-400 mb-2 truncate"></div>
@@ -295,6 +298,7 @@ function switchTab(tab) {
     reports: 'Şikayetler',
     banned: 'Yasak Kelimeler',
     system: 'Sistem İzleme',
+    ops: 'Operasyon',
   };
   document.getElementById('page-title').textContent = titles[tab] || '';
   if (tab === 'dashboard') renderDashboard();
@@ -303,6 +307,7 @@ function switchTab(tab) {
   if (tab === 'reports') renderReports();
   if (tab === 'banned') renderBanned();
   if (tab === 'system') renderSystem();
+  if (tab === 'ops') renderOps();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -820,6 +825,10 @@ function renderUserDetailModal(data) {
           class="px-4 py-2 rounded-lg bg-blue-100 text-blue-800 font-semibold hover:bg-blue-200">
           📝 Not Yaz
         </button>
+        <button onclick="grantAdmin('${user.id}', '${(user.display_name || '').replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-purple-100 text-purple-800 font-semibold hover:bg-purple-200">
+          🛡️ Admin Yap
+        </button>
       </div>
     </div>
   `;
@@ -1055,6 +1064,21 @@ function openNoteDialog(userId, name) {
     </div>
   `;
   openModal(html);
+}
+
+async function grantAdmin(userId, name) {
+  const reason = prompt(`${name} kullanıcısına admin yetkisi verilecek. Gerekçe:`);
+  if (!reason || reason.trim().length < 3) return;
+  try {
+    await apiJson('/admin/admins', {
+      method: 'POST',
+      body: JSON.stringify({ userId, reason: reason.trim() }),
+    });
+    closeModal();
+    alert('✓ Admin yetkisi verildi.');
+  } catch (e) {
+    alert('Hata: ' + e.message);
+  }
 }
 
 async function submitNote(userId) {
@@ -1542,6 +1566,331 @@ async function deleteBanned(id) {
     loadBanned();
   } catch (e) {
     alert('Hata: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Operasyon — Bakım modu, Feature flags, Admin listesi, Kampanya
+// ═══════════════════════════════════════════════════════════════
+
+async function renderOps() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="p-16 flex justify-center"><div class="spinner"></div></div>';
+  try {
+    const [settings, admins] = await Promise.all([
+      apiJson('/admin/settings'),
+      apiJson('/admin/admins'),
+    ]);
+    const settingsMap = {};
+    (settings.settings || []).forEach(s => { settingsMap[s.key] = s; });
+    const maint = settingsMap.maintenance_mode?.value || { enabled: false, message: '' };
+    const flags = settingsMap.feature_flags?.value || {};
+
+    c.innerHTML = `
+      <div class="grid grid-cols-2 gap-6 mb-6">
+        <!-- Bakım Modu -->
+        <div class="bg-white rounded-xl border ${maint.enabled ? 'border-red-400 bg-red-50' : 'border-slate-200'} p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <div class="text-lg font-bold">🚧 Bakım Modu</div>
+              <div class="text-xs text-slate-500">Açıkken kullanıcıya 503 döner, admin panel etkilenmez</div>
+            </div>
+            <div class="text-3xl font-extrabold ${maint.enabled ? 'text-red-600' : 'text-green-600'}">
+              ${maint.enabled ? 'AÇIK' : 'KAPALI'}
+            </div>
+          </div>
+          <textarea id="maint-msg" rows="3" maxlength="300"
+            placeholder="Bakım mesajı (kullanıcıya gösterilir)"
+            class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm resize-none focus:outline-none focus:border-[#1F4E79]">${(maint.message || '').replace(/</g, '&lt;')}</textarea>
+          <div class="flex gap-2 mt-3">
+            ${maint.enabled ? `
+              <button onclick="setMaintenance(false)" class="flex-1 px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-semibold">
+                ✓ Bakımı Kapat
+              </button>` : `
+              <button onclick="setMaintenance(true)" class="flex-1 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold">
+                🚧 Bakımı Aç
+              </button>`}
+          </div>
+        </div>
+
+        <!-- Kampanya -->
+        <div class="bg-white rounded-xl border border-slate-200 p-5">
+          <div class="text-lg font-bold mb-1">📢 Kampanya Bildirim</div>
+          <div class="text-xs text-slate-500 mb-3">Segment'e toplu bildirim (in-app + push)</div>
+          <button onclick="openCampaignDialog()"
+            class="w-full px-4 py-2 rounded-lg bg-[#1F4E79] hover:bg-[#183a5c] text-white font-semibold">
+            ✉️ Kampanya Oluştur
+          </button>
+          <div class="text-xs text-slate-400 mt-3">Örn: "Yeni özellik açıldı" · "Rehberini paylaş"</div>
+        </div>
+      </div>
+
+      <!-- Feature Flags -->
+      <div class="bg-white rounded-xl border border-slate-200 p-5 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <div class="text-lg font-bold">🚦 Feature Flags</div>
+            <div class="text-xs text-slate-500">Yeni özellikleri belirli % kullanıcıya aç. Deterministic — aynı user her seferinde aynı sonucu alır.</div>
+          </div>
+          <button onclick="openFlagDialog()" class="px-4 py-2 rounded-lg bg-[#1F4E79] hover:bg-[#183a5c] text-white text-sm font-semibold">
+            ➕ Flag Ekle
+          </button>
+        </div>
+        ${Object.keys(flags).length === 0 ? `
+          <div class="text-center text-slate-400 py-8">Henüz feature flag yok</div>
+        ` : `
+          <div class="space-y-2">
+            ${Object.entries(flags).map(([key, cfg]) => {
+              const percent = typeof cfg === 'number' ? cfg : (cfg.percent || 0);
+              const desc = typeof cfg === 'object' ? cfg.description : '';
+              return `
+                <div class="flex items-center gap-3 p-3 border border-slate-200 rounded-lg">
+                  <div class="flex-1">
+                    <div class="font-mono text-sm font-bold">${key}</div>
+                    ${desc ? '<div class="text-xs text-slate-500 mt-0.5">' + desc + '</div>' : ''}
+                  </div>
+                  <div class="w-32">
+                    <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                      <div class="h-full ${percent === 100 ? 'bg-green-500' : percent > 50 ? 'bg-yellow-500' : 'bg-blue-500'}" style="width: ${percent}%"></div>
+                    </div>
+                    <div class="text-xs text-center mt-1 font-bold">%${percent}</div>
+                  </div>
+                  <button onclick="openFlagDialog('${key}', ${percent}, '${(desc || '').replace(/'/g, "\\'")}')"
+                    class="text-slate-600 hover:text-slate-900 p-2">✏️</button>
+                  <button onclick="deleteFlag('${key}')"
+                    class="text-red-600 hover:bg-red-50 p-2 rounded">🗑️</button>
+                </div>`;
+            }).join('')}
+          </div>`}
+      </div>
+
+      <!-- Admin Kullanıcılar -->
+      <div class="bg-white rounded-xl border border-slate-200 p-5">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <div class="text-lg font-bold">👤 Admin Kullanıcılar (${admins.admins.length})</div>
+            <div class="text-xs text-slate-500">Yeni admin eklemek için önce Kullanıcılar sekmesinden aradığın kullanıcıyı bul, oradan "Admin Yap" butonunu kullan.</div>
+          </div>
+        </div>
+        <div class="space-y-2">
+          ${admins.admins.map(a => `
+            <div class="flex items-center gap-3 p-3 border border-slate-200 rounded-lg">
+              <div class="w-10 h-10 rounded-full bg-[#1F4E79] text-white flex items-center justify-center font-bold">
+                ${(a.display_name || '?').charAt(0).toUpperCase()}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="font-semibold text-sm">${a.display_name || '(isimsiz)'}</div>
+                <div class="text-xs text-slate-500 font-mono truncate">${a.id}</div>
+                <div class="text-xs text-slate-400">Son aktif: ${formatDateShort(a.last_active_at)}</div>
+              </div>
+              <button onclick="revokeAdmin('${a.id}', '${(a.display_name || '').replace(/'/g, "\\'")}')"
+                class="px-3 py-1.5 text-xs rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">
+                🚫 Yetkisini Al
+              </button>
+            </div>`).join('')}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    c.innerHTML = '<div class="text-red-600 p-4">Hata: ' + err.message + '</div>';
+  }
+}
+
+async function setMaintenance(enabled) {
+  const msg = document.getElementById('maint-msg').value.trim();
+  if (enabled && !confirm('BAKIM MODUNU AÇMAK istediğine emin misin? Tüm mobile kullanıcılar 503 alacak.')) return;
+  try {
+    await apiJson('/admin/settings/maintenance_mode', {
+      method: 'PUT',
+      body: JSON.stringify({
+        value: { enabled, message: msg },
+        description: 'Bakım modu durumu',
+      }),
+    });
+    renderOps();
+  } catch (e) {
+    alert('Hata: ' + e.message);
+  }
+}
+
+function openFlagDialog(existingKey, existingPercent, existingDesc) {
+  const isEdit = !!existingKey;
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">${isEdit ? '✏️ Flag Düzenle' : '➕ Yeni Feature Flag'}</div>
+        ${isEdit ? '<div class="text-xs text-slate-500 mt-1 font-mono">' + existingKey + '</div>' : ''}
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Key (kod)</label>
+        <input id="flag-key" type="text" ${isEdit ? 'disabled' : ''} maxlength="60"
+          value="${existingKey || ''}"
+          placeholder="second_degree, new_feed, chat_v2..."
+          pattern="[a-z0-9_]+"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm ${isEdit ? 'bg-slate-100' : ''} focus:outline-none focus:border-[#1F4E79]" />
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Yüzde: <span id="flag-pct-label" class="text-[#1F4E79] font-bold">${existingPercent ?? 10}</span></label>
+        <input id="flag-percent" type="range" min="0" max="100" step="5" value="${existingPercent ?? 10}"
+          class="w-full" oninput="document.getElementById('flag-pct-label').textContent = this.value" />
+        <div class="text-xs text-slate-500 mt-1">%0 = kimse · %100 = herkes · %10 = kullanıcıların yaklaşık onda biri</div>
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Açıklama</label>
+        <input id="flag-desc" type="text" maxlength="200"
+          value="${(existingDesc || '').replace(/"/g, '&quot;')}"
+          placeholder="Ne için? Örn: 2. derece tanıdıkların ilanları"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-[#1F4E79]" />
+      </div>
+      <div id="flag-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitFlag()" class="flex-1 px-4 py-3 rounded-lg bg-[#1F4E79] text-white font-semibold">
+        ${isEdit ? 'Güncelle' : 'Kaydet'}
+      </button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function submitFlag() {
+  const key = document.getElementById('flag-key').value.trim();
+  const percent = parseInt(document.getElementById('flag-percent').value, 10);
+  const desc = document.getElementById('flag-desc').value.trim();
+  const err = document.getElementById('flag-error');
+  err.classList.add('hidden');
+  if (!/^[a-z0-9_]{2,60}$/.test(key)) {
+    err.textContent = 'Key sadece küçük harf, rakam, alt çizgi (a-z 0-9 _) — 2-60 karakter.';
+    err.classList.remove('hidden');
+    return;
+  }
+  try {
+    // Mevcut flag'leri çek, güncelle, geri yaz
+    const settings = await apiJson('/admin/settings');
+    const cur = (settings.settings || []).find(s => s.key === 'feature_flags')?.value || {};
+    cur[key] = { percent, description: desc };
+    await apiJson('/admin/settings/feature_flags', {
+      method: 'PUT',
+      body: JSON.stringify({ value: cur, description: 'Feature flag yüzdeleri' }),
+    });
+    closeModal();
+    renderOps();
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  }
+}
+
+async function deleteFlag(key) {
+  if (!confirm(`Flag "${key}" silinsin mi? Bu özellik herkese kapanır.`)) return;
+  try {
+    const settings = await apiJson('/admin/settings');
+    const cur = (settings.settings || []).find(s => s.key === 'feature_flags')?.value || {};
+    delete cur[key];
+    await apiJson('/admin/settings/feature_flags', {
+      method: 'PUT',
+      body: JSON.stringify({ value: cur, description: 'Feature flag yüzdeleri' }),
+    });
+    renderOps();
+  } catch (e) {
+    alert('Hata: ' + e.message);
+  }
+}
+
+async function revokeAdmin(userId, name) {
+  const reason = prompt(`${name} kullanıcısının admin yetkisi geri alınacak. Gerekçe:`);
+  if (!reason || reason.trim().length < 3) return;
+  try {
+    await apiJson('/admin/admins/' + userId, {
+      method: 'DELETE',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    renderOps();
+  } catch (e) {
+    alert('Hata: ' + e.message);
+  }
+}
+
+const AUDIENCE_OPTIONS = [
+  { key: 'all', label: '👥 Tüm Aktif Kullanıcılar', desc: 'Status=active olan tüm kullanıcılar' },
+  { key: 'active_7d', label: '🔥 Son 7 gün aktif', desc: 'Son 7 günde uygulamayı açmışlar' },
+  { key: 'active_30d', label: '📅 Son 30 gün aktif', desc: 'Son 30 günde uygulamayı açmışlar' },
+  { key: 'no_contacts', label: '❗ Rehber izni yok', desc: '0 kişi rehberi olan kullanıcılar' },
+  { key: 'low_contacts', label: '⚠️ Az rehber (1-4)', desc: 'Selected Contacts paterni' },
+];
+
+function openCampaignDialog() {
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">📢 Kampanya Bildirim</div>
+        <div class="text-xs text-slate-500 mt-1">In-app + push notification, tüm seçili kullanıcılara</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-4">
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-2">Hedef Kitle</label>
+        <div class="space-y-2">
+          ${AUDIENCE_OPTIONS.map((o, i) => `
+            <label class="flex items-start gap-3 p-3 border border-slate-200 rounded-lg cursor-pointer hover:bg-slate-50">
+              <input type="radio" name="audience" value="${o.key}" ${i === 0 ? 'checked' : ''} class="mt-1" />
+              <div>
+                <div class="font-semibold text-sm">${o.label}</div>
+                <div class="text-xs text-slate-500">${o.desc}</div>
+              </div>
+            </label>`).join('')}
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Başlık</label>
+        <input id="campaign-title" type="text" maxlength="120" value="Abadan'dan Yeni Bilgi"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79]" />
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Mesaj</label>
+        <textarea id="campaign-body" rows="4" maxlength="500"
+          placeholder="Kampanya mesajın..."
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg resize-none focus:outline-none focus:border-[#1F4E79]"></textarea>
+      </div>
+      <div id="campaign-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitCampaign()" class="flex-1 px-4 py-3 rounded-lg bg-[#1F4E79] hover:bg-[#183a5c] text-white font-semibold">
+        📨 Gönder
+      </button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function submitCampaign() {
+  const audience = document.querySelector('input[name="audience"]:checked')?.value;
+  const title = document.getElementById('campaign-title').value.trim();
+  const body = document.getElementById('campaign-body').value.trim();
+  const err = document.getElementById('campaign-error');
+  err.classList.add('hidden');
+  if (!audience || !title || body.length < 3) {
+    err.textContent = 'Hedef kitle + başlık + en az 3 karakter mesaj gerekli.';
+    err.classList.remove('hidden');
+    return;
+  }
+  if (!confirm(`KAMPANYA gönderilecek — bu işlem büyük sayıda kullanıcıya push atacak. Emin misin?`)) return;
+  try {
+    const result = await apiJson('/admin/broadcast/campaign', {
+      method: 'POST',
+      body: JSON.stringify({ audience, title, body }),
+    });
+    closeModal();
+    alert('✓ ' + (result?.sent ?? 0) + ' kullanıcıya gönderildi.');
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
   }
 }
 

@@ -5,22 +5,16 @@ const { requireAuth } = require('../auth/middleware');
 
 const router = express.Router();
 
-// Admin user_id'leri env'den
-const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, display_name, avatar_url, bio, gender, location_city, created_at, onboarded_at FROM users WHERE id = $1',
+      'SELECT id, display_name, avatar_url, bio, gender, location_city, created_at, onboarded_at, role FROM users WHERE id = $1',
       [req.userId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'not_found' });
     const user = rows[0];
-    // Frontend admin menüsünü gösterip göstermeyeceğini bilmek için
-    user.is_admin = ADMIN_USER_IDS.includes(user.id);
+    // Frontend admin menüsünü gösterip göstermeyeceğini bilmek için (DB rolüne göre)
+    user.is_admin = user.role === 'admin';
     res.json({ user });
   } catch (err) {
     next(err);
@@ -243,6 +237,31 @@ router.delete('/me', requireAuth, async (req, res, next) => {
   } catch (err) {
     console.error('[ACCOUNT-DELETE] error:', err);
     next(err);
+  }
+});
+
+// GET /users/me/features — kullanıcı için hesaplanmış feature flag'ler
+// Mobile app startup'ta bu endpoint'i çağırıp UI'de feature'ları gösterir/gizler.
+// Deterministic — aynı user_id her seferinde aynı sonucu alır.
+router.get('/me/features', requireAuth, async (req, res, next) => {
+  try {
+    const settingsSvc = require('../services/settings');
+    const features = await settingsSvc.getFeaturesForUser(req.userId);
+    res.json({ features });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /users/me/maintenance — bakım durumu (mobile app auth öncesi de kontrol edebilir)
+// Public — auth şart değil
+router.get('/maintenance', async (req, res, next) => {
+  try {
+    const settingsSvc = require('../services/settings');
+    const info = await settingsSvc.getMaintenanceInfo();
+    res.json(info || { enabled: false });
+  } catch (err) {
+    res.json({ enabled: false });
   }
 });
 

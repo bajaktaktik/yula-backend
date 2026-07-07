@@ -36,6 +36,18 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_totp_verified_at TIMESTAMPTZ;
 -- Süreli askı (7 gün, 30 gün gibi). NULL ise süresiz askı veya aktif.
 -- Middleware her request'te suspended_until < now() ise otomatik status='active' yapar.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_until TIMESTAMPTZ;
+-- Admin rolü (env yerine DB'de tutulur, panelden yönetilebilir)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role) WHERE role != 'user';
+
+-- Sistem ayarları (bakım modu, feature flags vs.) — key/value
+CREATE TABLE IF NOT EXISTS settings (
+  key         TEXT PRIMARY KEY,
+  value       JSONB NOT NULL,
+  description TEXT,
+  updated_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Admin audit log — kim/kimi/ne zaman/ne yaptı/neden
 -- Yasal iz + moderasyon şeffaflığı için. Silinemez (immutable log).

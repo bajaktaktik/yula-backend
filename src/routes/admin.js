@@ -1,6 +1,5 @@
 // Admin moderasyon paneli — Apple Guideline 1.2 24-saat moderasyon zorunluluğu.
-// ADMIN_USER_IDS env var'ı virgülle ayrılmış user UUID listesi.
-// Sadece bu kullanıcılar admin endpoint'lerini çağırabilir.
+// Yetki kaynağı artık DB'de users.role = 'admin'. Env ADMIN_USER_IDS sadece backward compat için seed.
 
 const express = require('express');
 const Joi = require('joi');
@@ -9,15 +8,32 @@ const { requireAuth, invalidateUserStatusCache } = require('../auth/middleware')
 
 const router = express.Router();
 
-const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+// Admin durumunun DB'den çekilmesi — 30 saniye cache (aynı request'te tekrar sorgu atmaya gerek yok)
+const adminCache = new Map(); // userId → { isAdmin, ts }
+const ADMIN_CACHE_TTL_MS = 30_000;
 
-function requireAdmin(req, res, next) {
-  if (!ADMIN_USER_IDS.includes(req.userId)) {
-    return res.status(403).json({ error: 'forbidden', message: 'Admin yetkisi gerekli.' });
+async function isAdminUser(userId) {
+  if (!userId) return false;
+  const cached = adminCache.get(userId);
+  if (cached && Date.now() - cached.ts < ADMIN_CACHE_TTL_MS) return cached.isAdmin;
+  try {
+    const r = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+    const isAdmin = r.rows[0]?.role === 'admin';
+    adminCache.set(userId, { isAdmin, ts: Date.now() });
+    return isAdmin;
+  } catch {
+    return false;
   }
+}
+
+function invalidateAdminCache(userId) {
+  if (userId) adminCache.delete(userId);
+  else adminCache.clear();
+}
+
+async function requireAdmin(req, res, next) {
+  const ok = await isAdminUser(req.userId);
+  if (!ok) return res.status(403).json({ error: 'forbidden', message: 'Admin yetkisi gerekli.' });
   next();
 }
 
@@ -1056,6 +1072,219 @@ router.get('/system/sentry-summary', requireAuth, requireAdmin, async (req, res,
         ? `Sentry API hata: ${err.response.status}`
         : 'Sentry API\'ye ulaşılamadı: ' + err.message,
     });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// OPERASYON — Bakım modu, Feature flags, Admin yönetimi, Kampanya
+// ═══════════════════════════════════════════════════════════════════
+
+const settingsSvc = require('../services/settings');
+
+// GET /admin/settings — tüm anahtarlar
+router.get('/settings', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const rows = await settingsSvc.all();
+    res.json({ settings: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /admin/settings/:key — key/value güncelle (upsert)
+const settingUpdateSchema = Joi.object({
+  value: Joi.any().required(),
+  description: Joi.string().max(300).allow('').optional(),
+});
+
+router.put('/settings/:key', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = settingUpdateSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+    await settingsSvc.set(req.params.key, value.value, req.userId, value.description);
+
+    // Audit log
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+       VALUES ($1, NULL, 'setting_change', $2, $3)`,
+      [
+        req.userId,
+        'Ayar güncellendi: ' + req.params.key,
+        JSON.stringify({ key: req.params.key, new_value: value.value }),
+      ]
+    ).catch(() => {});
+
+    console.log(`[admin] setting_change key=${req.params.key} by=${req.userId}`);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Admin listesi + ekle/çıkar
+// GET /admin/admins
+router.get('/admins', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, display_name, avatar_url, last_active_at, created_at
+       FROM users WHERE role = 'admin' ORDER BY display_name`
+    );
+    res.json({ admins: r.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/admins — kullanıcıyı admin yap
+const adminGrantSchema = Joi.object({
+  userId: Joi.string().uuid().required(),
+  reason: Joi.string().min(3).max(500).required(),
+});
+
+router.post('/admins', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = adminGrantSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const r = await pool.query(
+      `UPDATE users SET role = 'admin' WHERE id = $1 AND role != 'admin'
+       RETURNING id, display_name`,
+      [value.userId]
+    );
+    if (r.rowCount === 0) {
+      return res.status(400).json({ error: 'already_admin_or_not_found', message: 'Zaten admin veya kullanıcı yok.' });
+    }
+
+    invalidateAdminCache(value.userId);
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason)
+       VALUES ($1, $2, 'grant_admin', $3)`,
+      [req.userId, value.userId, value.reason]
+    );
+
+    console.log(`[admin] grant_admin user=${value.userId} by=${req.userId}`);
+    res.json({ ok: true, user: r.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /admin/admins/:id — admin yetkisini geri al
+router.delete('/admins/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    if (req.params.id === req.userId) {
+      return res.status(400).json({ error: 'cannot_revoke_self', message: 'Kendini admin\'likten çıkaramazsın.' });
+    }
+    const reason = String(req.body?.reason || '').trim();
+    if (reason.length < 3) return res.status(400).json({ error: 'reason_required' });
+
+    const r = await pool.query(
+      `UPDATE users SET role = 'user' WHERE id = $1 AND role = 'admin'
+       RETURNING id, display_name`,
+      [req.params.id]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not_admin' });
+
+    invalidateAdminCache(req.params.id);
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason)
+       VALUES ($1, $2, 'revoke_admin', $3)`,
+      [req.userId, req.params.id, reason]
+    );
+
+    console.log(`[admin] revoke_admin user=${req.params.id} by=${req.userId}`);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Kampanya broadcast — audience ile tüm kullanıcılara veya alt kümeye
+// audience: 'all' | 'active_7d' | 'active_30d' | 'no_contacts' | 'low_contacts'
+const campaignSchema = Joi.object({
+  audience: Joi.string().valid('all', 'active_7d', 'active_30d', 'no_contacts', 'low_contacts').required(),
+  title: Joi.string().min(1).max(120).required(),
+  body: Joi.string().min(1).max(500).required(),
+});
+
+router.post('/broadcast/campaign', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = campaignSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Audience'a göre user_id listesi
+    let query;
+    if (value.audience === 'all') {
+      query = `SELECT id FROM users WHERE status = 'active'`;
+    } else if (value.audience === 'active_7d') {
+      query = `SELECT id FROM users WHERE status = 'active' AND last_active_at > now() - interval '7 days'`;
+    } else if (value.audience === 'active_30d') {
+      query = `SELECT id FROM users WHERE status = 'active' AND last_active_at > now() - interval '30 days'`;
+    } else if (value.audience === 'no_contacts') {
+      query = `SELECT u.id FROM users u WHERE u.status = 'active'
+               AND NOT EXISTS (SELECT 1 FROM user_contacts uc WHERE uc.user_id = u.id)`;
+    } else if (value.audience === 'low_contacts') {
+      query = `SELECT user_id AS id FROM user_contacts GROUP BY user_id HAVING COUNT(*) BETWEEN 1 AND 4`;
+    }
+    const r = await pool.query(query);
+    const userIds = r.rows.map((row) => row.id);
+
+    if (userIds.length === 0) {
+      return res.json({ ok: true, sent: 0, message: 'Bu segmentte kullanıcı yok.' });
+    }
+
+    // In-app bildirim toplu insert — 500'lük parçalar
+    const now = new Date();
+    const BATCH = 500;
+    let total = 0;
+    for (let i = 0; i < userIds.length; i += BATCH) {
+      const slice = userIds.slice(i, i + BATCH);
+      const rows = [];
+      const params = [];
+      slice.forEach((uid, idx) => {
+        rows.push(`($${idx * 3 + 1}, 'admin_broadcast', $${idx * 3 + 2}::jsonb, $${idx * 3 + 3})`);
+        params.push(uid, JSON.stringify({ title: value.title, body: value.body, sender: 'admin', campaign: true }), now);
+      });
+      const result = await pool.query(
+        `INSERT INTO notifications (user_id, type, payload, created_at)
+         VALUES ${rows.join(',')} RETURNING id`,
+        params
+      );
+      total += result.rowCount;
+    }
+
+    // Audit
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+       VALUES ($1, NULL, 'broadcast', $2, $3)`,
+      [
+        req.userId,
+        value.title + ' — ' + value.body,
+        JSON.stringify({ campaign: true, audience: value.audience, recipient_count: userIds.length }),
+      ]
+    ).catch(() => {});
+
+    // Push — arka planda
+    (async () => {
+      const { sendToUser } = require('../services/push');
+      for (const uid of userIds) {
+        try {
+          await sendToUser(uid, {
+            title: value.title,
+            body: value.body,
+            data: { type: 'admin_broadcast' },
+          });
+        } catch (err) {
+          console.error(`[campaign] push fail for ${uid}:`, err.message);
+        }
+      }
+      console.log(`[campaign] push done for ${userIds.length} users audience=${value.audience}`);
+    })();
+
+    console.log(`[admin] campaign audience=${value.audience} sent=${total} by=${req.userId}`);
+    res.json({ ok: true, sent: total, audience: value.audience });
+  } catch (err) {
+    next(err);
   }
 });
 

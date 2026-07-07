@@ -108,6 +108,28 @@ const loginLimiter = rateLimit({
 });
 app.use('/auth/login-pin', loginLimiter);
 
+// Bakım modu middleware — admin endpoint'leri + panel + auth hariç normal isteklere 503
+// Bakım açık iken mobile app'ler bir maintenance mesajı görebilir
+const settingsService = require('./services/settings');
+app.use(async (req, res, next) => {
+  // Her zaman açık path'ler: healthz, admin paneli, auth (giriş kırılmasın), /admin API'leri
+  if (req.path === '/healthz') return next();
+  if (req.path.startsWith(panelPath + '/') || req.path === panelPath) return next();
+  if (req.path.startsWith('/auth')) return next();
+  if (req.path.startsWith('/admin')) return next();
+
+  try {
+    const info = await settingsService.getMaintenanceInfo();
+    if (info?.enabled) {
+      return res.status(503).json({
+        error: 'maintenance_mode',
+        message: info.message || 'Uygulama şu an bakımda. Kısa süre sonra tekrar dene.',
+      });
+    }
+  } catch {}
+  next();
+});
+
 app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
 app.use('/contacts', contactRoutes);
@@ -159,6 +181,24 @@ setupChat(io);
       }
     }
     console.log(`[migrate] tamamlandı: ${ok} OK, ${fail} fail`);
+
+    // ADMIN_USER_IDS env → DB'ye seed (backward compat)
+    // İlk deploy'da bu ID'lerin role'lerini admin yapar. Sonra panelden yönetilebilir.
+    const seedIds = (process.env.ADMIN_USER_IDS || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (seedIds.length > 0) {
+      try {
+        const r = await pool.query(
+          `UPDATE users SET role = 'admin' WHERE id = ANY($1::uuid[]) AND role != 'admin' RETURNING id`,
+          [seedIds]
+        );
+        if (r.rowCount > 0) {
+          console.log(`[migrate] admin seed: ${r.rowCount} kullanıcı admin yapıldı`);
+        }
+      } catch (seedErr) {
+        console.error('[migrate] admin seed hatası:', seedErr.message);
+      }
+    }
   } catch (e) {
     console.error('[migrate] Şema migration hatası:', e.message);
     // Migrate hatası fatal değil — server yine başlasın (eski schema ile çalışır)
