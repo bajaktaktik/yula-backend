@@ -177,8 +177,8 @@ function renderPreviewHTML(l, token) {
   const shareUrl = (process.env.PUBLIC_BASE_URL || 'https://api.abadan.com.tr') + '/i/' + token;
 
   // App Store / Play Store link'leri
-  const iosUrl = process.env.IOS_APP_URL || 'https://apps.apple.com/tr/app/abadan/id6738253148';
-  const androidUrl = process.env.ANDROID_APP_URL || 'https://play.google.com/store/apps/details?id=com.abadan.abadan';
+  const iosUrl = process.env.IOS_APP_URL || 'https://apps.apple.com/tr/app/abadan/id6776988596';
+  const androidUrl = process.env.ANDROID_APP_URL || 'https://play.google.com/store/apps/details?id=com.abadan.app';
 
   return `<!DOCTYPE html>
 <html lang="tr">
@@ -203,7 +203,7 @@ function renderPreviewHTML(l, token) {
   ${cover ? `<meta name="twitter:image" content="${cover}" />` : ''}
 
   <!-- iOS App Universal Link -->
-  <meta name="apple-itunes-app" content="app-id=6738253148, app-argument=${shareUrl}">
+  <meta name="apple-itunes-app" content="app-id=6776988596, app-argument=${shareUrl}">
 
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231F4E79'/><text x='50' y='68' text-anchor='middle' font-size='60' fill='white' font-family='sans-serif' font-weight='bold'>A</text></svg>" />
 
