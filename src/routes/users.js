@@ -131,7 +131,7 @@ router.get('/me/connections', requireAuth, async (req, res, next) => {
          JOIN users u ON u.phone_hash = uc.contact_phone_hash
          WHERE uc.user_id = $1 AND u.status = 'active'
        )
-       SELECT u.id, u.avatar_url,
+       SELECT u.id, u.avatar_url, u.last_active_at,
               REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS name,
               -- Bu tanıdığın kendi aktif ilan sayısı
               (
