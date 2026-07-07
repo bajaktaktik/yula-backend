@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Abadan Admin" />
+  <title>Abadan · Admin Paneli</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231F4E79'/><text x='50' y='68' text-anchor='middle' font-size='60' fill='white' font-family='sans-serif' font-weight='bold'>A</text></svg>" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+    .card { background: white; border-radius: 12px; border: 1px solid #e2e8f0; padding: 16px; }
+    .card-lg { border-left-width: 4px; }
+    .fade-in { animation: fadeIn 0.15s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .spinner { border: 3px solid #e2e8f0; border-top-color: #1F4E79; border-radius: 50%; width: 32px; height: 32px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .modal-overlay { background: rgba(15, 23, 42, 0.55); }
+    /* Scrollbar (macOS style) */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+
+<!-- ═══════════════════ LOGIN ═══════════════════ -->
+<div id="login-view" class="hidden min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-8">
+    <div class="text-center mb-8">
+      <div class="inline-block bg-[#1F4E79] w-16 h-16 rounded-2xl flex items-center justify-center text-white text-3xl font-bold mb-4">A</div>
+      <h1 class="text-2xl font-bold">Abadan Admin</h1>
+      <p class="text-sm text-slate-500 mt-1">Sadece yetkili hesaplar giriş yapabilir</p>
+    </div>
+    <form id="login-form" class="space-y-4">
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Telefon</label>
+        <input id="phone" type="tel" required
+          placeholder="+90 555 123 45 67"
+          class="w-full px-4 py-3 border border-slate-300 rounded-lg text-base focus:outline-none focus:border-[#1F4E79] focus:ring-2 focus:ring-[#1F4E79]/20"
+          autocomplete="tel" />
+      </div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">PIN</label>
+        <input id="pin" type="password" inputmode="numeric" maxlength="6" required
+          placeholder="••••"
+          class="w-full px-4 py-3 border border-slate-300 rounded-lg text-base tracking-widest focus:outline-none focus:border-[#1F4E79] focus:ring-2 focus:ring-[#1F4E79]/20" />
+      </div>
+      <div id="login-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+      <button id="login-btn" type="submit"
+        class="w-full bg-[#1F4E79] hover:bg-[#183a5c] text-white font-semibold py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+        Giriş Yap
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════ ANA PANEL ═══════════════════ -->
+<div id="main-view" class="hidden min-h-screen flex">
+  <!-- Sidebar -->
+  <aside class="w-56 bg-slate-900 text-white flex flex-col">
+    <div class="p-4 border-b border-slate-800">
+      <div class="flex items-center gap-2">
+        <div class="bg-[#1F4E79] w-8 h-8 rounded-lg flex items-center justify-center font-bold">A</div>
+        <div>
+          <div class="font-bold">Abadan</div>
+          <div class="text-xs text-slate-400">Admin Paneli</div>
+        </div>
+      </div>
+    </div>
+    <nav class="flex-1 p-2 space-y-1">
+      <button data-tab="dashboard" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>📊</span> Dashboard
+      </button>
+      <button data-tab="users" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>👥</span> Kullanıcılar
+      </button>
+      <button data-tab="reports" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>⚠️</span> Şikayetler
+        <span id="reports-badge" class="hidden ml-auto bg-red-600 text-xs px-2 py-0.5 rounded-full">0</span>
+      </button>
+    </nav>
+    <div class="p-3 border-t border-slate-800">
+      <div id="user-info" class="text-xs text-slate-400 mb-2 truncate"></div>
+      <button id="logout-btn" class="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-800 text-red-400">
+        🚪 Çıkış Yap
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 overflow-auto">
+    <!-- Header -->
+    <header class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between sticky top-0 z-10">
+      <h2 id="page-title" class="text-lg font-bold">Dashboard</h2>
+      <div class="flex items-center gap-3">
+        <span id="last-updated" class="text-xs text-slate-500"></span>
+        <button id="refresh-btn" class="text-slate-600 hover:text-slate-900 p-2 rounded-lg hover:bg-slate-100">🔄</button>
+      </div>
+    </header>
+
+    <!-- Content -->
+    <div id="content" class="p-6"></div>
+  </main>
+</div>
+
+<!-- Loading full-screen -->
+<div id="loading" class="fixed inset-0 flex items-center justify-center bg-white">
+  <div class="spinner"></div>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="hidden fixed inset-0 modal-overlay z-50 flex items-center justify-center p-4">
+  <div id="modal-content" class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-auto fade-in"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Configuration & Utilities
+// ═══════════════════════════════════════════════════════════════
+
+const API_BASE = ''; // same-origin (backend serves both /panel and /admin API)
+const LS_ACCESS = 'panel_access';
+const LS_REFRESH = 'panel_refresh';
+const LS_USER = 'panel_user';
+
+// Turkish phone → +90XXXXXXXXXX
+function normalizeTRPhone(input) {
+  let s = String(input || '').replace(/[^\d+]/g, '');
+  if (s.startsWith('+90')) return s;
+  if (s.startsWith('90') && s.length >= 12) return '+' + s;
+  if (s.startsWith('0') && s.length === 11) return '+90' + s.slice(1);
+  if (s.length === 10) return '+90' + s;
+  return null;
+}
+
+async function sha256Hex(str) {
+  const buf = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// API wrapper — auto refresh on 401
+async function api(path, options = {}) {
+  const access = localStorage.getItem(LS_ACCESS);
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (access) headers.Authorization = 'Bearer ' + access;
+  let res = await fetch(API_BASE + path, { ...options, headers });
+
+  if (res.status === 401) {
+    const refresh = localStorage.getItem(LS_REFRESH);
+    if (refresh) {
+      const rr = await fetch(API_BASE + '/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh }),
+      });
+      if (rr.ok) {
+        const data = await rr.json();
+        localStorage.setItem(LS_ACCESS, data.access);
+        headers.Authorization = 'Bearer ' + data.access;
+        res = await fetch(API_BASE + path, { ...options, headers });
+      } else {
+        logout();
+        return null;
+      }
+    } else {
+      logout();
+      return null;
+    }
+  }
+
+  if (res.status === 403) {
+    const body = await res.json().catch(() => ({}));
+    if (body.error === 'user_banned' || body.error === 'admin_required') {
+      logout();
+      return null;
+    }
+  }
+
+  return res;
+}
+
+async function apiJson(path, options) {
+  const res = await api(path, options);
+  if (!res) return null;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message || body.error || 'API error ' + res.status);
+  }
+  return await res.json();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Auth
+// ═══════════════════════════════════════════════════════════════
+
+function showLogin() {
+  document.getElementById('loading').classList.add('hidden');
+  document.getElementById('main-view').classList.add('hidden');
+  document.getElementById('login-view').classList.remove('hidden');
+  document.getElementById('login-view').classList.add('flex');
+}
+
+function showMain() {
+  document.getElementById('loading').classList.add('hidden');
+  document.getElementById('login-view').classList.add('hidden');
+  document.getElementById('login-view').classList.remove('flex');
+  document.getElementById('main-view').classList.remove('hidden');
+  document.getElementById('main-view').classList.add('flex');
+  const user = JSON.parse(localStorage.getItem(LS_USER) || 'null');
+  if (user) {
+    document.getElementById('user-info').textContent = user.display_name || user.id;
+  }
+  switchTab('dashboard');
+}
+
+function logout() {
+  localStorage.removeItem(LS_ACCESS);
+  localStorage.removeItem(LS_REFRESH);
+  localStorage.removeItem(LS_USER);
+  showLogin();
+}
+
+async function doLogin(phoneInput, pin) {
+  const phone = normalizeTRPhone(phoneInput);
+  if (!phone) throw new Error('Geçersiz telefon numarası — TR formatında gir');
+  const phoneSha256 = await sha256Hex(phone);
+  const res = await fetch(API_BASE + '/auth/login-pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, phoneSha256, pin }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || body.error || 'Giriş başarısız');
+  if (!body.user?.is_admin) {
+    // is_admin bilgisi login response'ta yok — /users/me çek
+    localStorage.setItem(LS_ACCESS, body.tokens.access);
+    localStorage.setItem(LS_REFRESH, body.tokens.refresh);
+    const me = await apiJson('/users/me');
+    if (!me?.user?.is_admin) {
+      logout();
+      throw new Error('Bu hesap admin değil. Panel erişimi reddedildi.');
+    }
+    localStorage.setItem(LS_USER, JSON.stringify(me.user));
+  } else {
+    localStorage.setItem(LS_ACCESS, body.tokens.access);
+    localStorage.setItem(LS_REFRESH, body.tokens.refresh);
+    localStorage.setItem(LS_USER, JSON.stringify(body.user));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Tabs
+// ═══════════════════════════════════════════════════════════════
+
+let currentTab = 'dashboard';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    if (b.dataset.tab === tab) {
+      b.classList.add('bg-slate-800');
+    } else {
+      b.classList.remove('bg-slate-800');
+    }
+  });
+  const titles = { dashboard: 'Dashboard', users: 'Kullanıcı Yönetimi', reports: 'Şikayetler' };
+  document.getElementById('page-title').textContent = titles[tab] || '';
+  if (tab === 'dashboard') renderDashboard();
+  if (tab === 'users') renderUsers();
+  if (tab === 'reports') renderReports();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Dashboard
+// ═══════════════════════════════════════════════════════════════
+
+function delta(today, yesterday) {
+  if (yesterday === 0 && today === 0) return { text: '—', color: 'text-slate-500' };
+  if (yesterday === 0) return { text: '+' + today, color: 'text-green-600' };
+  const pct = Math.round(((today - yesterday) / yesterday) * 100);
+  if (pct > 0) return { text: '↑ %' + pct, color: 'text-green-600' };
+  if (pct < 0) return { text: '↓ %' + Math.abs(pct), color: 'text-red-600' };
+  return { text: '=', color: 'text-slate-500' };
+}
+
+function metricCard(icon, label, value, sub, borderColor) {
+  const subEl = sub ? `<div class="text-xs mt-1 ${sub.color || 'text-slate-500'} font-semibold">${sub.text}</div>` : '';
+  return `
+    <div class="card card-lg" style="border-left-color: ${borderColor};">
+      <div class="flex items-center gap-2 text-xs text-slate-500 font-semibold uppercase tracking-wide">
+        <span>${icon}</span> ${label}
+      </div>
+      <div class="text-3xl font-extrabold mt-2">${(value ?? 0).toLocaleString('tr-TR')}</div>
+      ${subEl}
+    </div>`;
+}
+
+async function renderDashboard() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="flex items-center justify-center py-16"><div class="spinner"></div></div>';
+  try {
+    const [d, sms] = await Promise.all([
+      apiJson('/admin/dashboard'),
+      apiJson('/admin/sms-balance').catch(() => null),
+    ]);
+    updateReportsBadge(d.reports_pending);
+
+    const signupD = delta(d.signup_today, d.signup_yesterday);
+    const listingD = delta(d.listings_today, d.listings_yesterday);
+    const msgD = delta(d.messages_today, d.messages_yesterday);
+
+    let smsHtml = '';
+    if (sms && (sms.twilio || sms.netgsm)) {
+      const boxes = [];
+      if (sms.twilio?.ok) {
+        const low = sms.twilio.balance < 5;
+        boxes.push(`<div class="flex items-center gap-2 bg-white border rounded-lg px-3 py-2 ${low ? 'border-red-300' : 'border-yellow-200'}">
+          <span>💵</span><span class="text-xs text-slate-500">Twilio</span>
+          <span class="font-bold ${low ? 'text-red-600' : ''}">$${sms.twilio.balance.toFixed(2)}</span>
+        </div>`);
+      }
+      if (sms.netgsm?.ok) {
+        const low = sms.netgsm.balance < 100;
+        boxes.push(`<div class="flex items-center gap-2 bg-white border rounded-lg px-3 py-2 ${low ? 'border-red-300' : 'border-yellow-200'}">
+          <span>💬</span><span class="text-xs text-slate-500">NetGSM</span>
+          <span class="font-bold ${low ? 'text-red-600' : ''}">${sms.netgsm.balance.toFixed(0)} kredi</span>
+        </div>`);
+      }
+      if (sms.twilio && !sms.twilio.ok) boxes.push(`<div class="flex items-center gap-2 bg-red-50 border border-red-300 rounded-lg px-3 py-2 text-red-700"><span>⚠️</span>Twilio hata</div>`);
+      if (sms.netgsm && !sms.netgsm.ok) boxes.push(`<div class="flex items-center gap-2 bg-red-50 border border-red-300 rounded-lg px-3 py-2 text-red-700"><span>⚠️</span>NetGSM hata</div>`);
+      smsHtml = `<div class="mb-6 flex flex-wrap gap-2">${boxes.join('')}</div>`;
+    }
+
+    c.innerHTML = `
+      ${smsHtml}
+      <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Bugün</div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        ${metricCard('👤', 'Kayıt', d.signup_today, { text: 'Dün: ' + d.signup_yesterday + ' · ' + signupD.text, color: signupD.color }, '#16a34a')}
+        ${metricCard('📦', 'Yeni İlan', d.listings_today, { text: 'Dün: ' + d.listings_yesterday + ' · ' + listingD.text, color: listingD.color }, '#1F4E79')}
+        ${metricCard('💬', 'Mesaj', d.messages_today, { text: 'Dün: ' + d.messages_yesterday + ' · ' + msgD.text, color: msgD.color }, '#7c3aed')}
+        ${metricCard('⚠️', 'Bekleyen Şikayet', d.reports_pending, { text: 'Bugün: ' + d.reports_today + ' yeni', color: 'text-slate-500' }, d.reports_pending > 0 ? '#dc2626' : '#94a3b8')}
+      </div>
+
+      <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Aktif Kullanıcı</div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        ${metricCard('⚡', 'Son 24 saat (DAU)', d.dau, null, '#f59e0b')}
+        ${metricCard('📅', 'Son 7 gün (WAU)', d.wau, null, '#0ea5e9')}
+        ${metricCard('📈', 'Son 30 gün (MAU)', d.mau, null, '#8b5cf6')}
+        ${metricCard('💭', 'Toplam Sohbet', d.conversations_total, null, '#0891b2')}
+      </div>
+
+      <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Kullanıcı Havuzu</div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        ${metricCard('👥', 'Toplam', d.users_total, null, '#1F4E79')}
+        ${metricCard('✅', 'Aktif', d.users_active, null, '#16a34a')}
+        ${metricCard('⏸️', 'Askıda', d.users_suspended, null, '#f59e0b')}
+        ${metricCard('🚫', 'Yasaklı', d.users_banned, null, '#dc2626')}
+      </div>
+
+      <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Dağılım</div>
+      <div class="grid grid-cols-4 gap-4">
+        ${metricCard('♀️', 'Kadın', d.users_female, null, '#ec4899')}
+        ${metricCard('♂️', 'Erkek', d.users_male, null, '#2563eb')}
+        ${metricCard('🟢', 'Aktif İlan', d.listings_active, null, '#16a34a')}
+        ${metricCard('📚', 'Toplam İlan', d.listings_total, null, '#64748b')}
+      </div>
+    `;
+    document.getElementById('last-updated').textContent = 'Güncelleme: ' + new Date().toLocaleTimeString('tr-TR');
+  } catch (err) {
+    c.innerHTML = '<div class="text-red-600 bg-red-50 border border-red-200 rounded-lg p-4">Yüklenemedi: ' + err.message + '</div>';
+  }
+}
+
+function updateReportsBadge(n) {
+  const el = document.getElementById('reports-badge');
+  if (n > 0) {
+    el.textContent = n;
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Kullanıcılar
+// ═══════════════════════════════════════════════════════════════
+
+let usersState = { q: '', status: 'all' };
+
+function usersView() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="mb-4 flex flex-wrap gap-3 items-center">
+      <input id="user-search" placeholder="İsim veya kullanıcı ID"
+        value="${usersState.q.replace(/"/g, '&quot;')}"
+        class="flex-1 min-w-[240px] px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F4E79]" />
+      <div class="flex gap-1">
+        ${['all', 'active', 'suspended', 'banned'].map(s => `
+          <button data-status="${s}" class="status-chip px-3 py-2 text-sm rounded-lg border ${usersState.status === s ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300'}">
+            ${ ({all: 'Tümü', active: 'Aktif', suspended: 'Askı', banned: 'Yasaklı'})[s] }
+          </button>
+        `).join('')}
+      </div>
+    </div>
+    <div id="users-list" class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div class="p-16 flex justify-center"><div class="spinner"></div></div>
+    </div>
+  `;
+
+  const searchInput = document.getElementById('user-search');
+  let debounceT;
+  searchInput.addEventListener('input', e => {
+    clearTimeout(debounceT);
+    debounceT = setTimeout(() => {
+      usersState.q = e.target.value.trim();
+      loadUsers();
+    }, 300);
+  });
+  document.querySelectorAll('.status-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      usersState.status = b.dataset.status;
+      usersView();
+      loadUsers();
+    });
+  });
+
+  loadUsers();
+}
+
+async function loadUsers() {
+  const list = document.getElementById('users-list');
+  try {
+    const params = new URLSearchParams({ limit: '80' });
+    if (usersState.q) params.set('q', usersState.q);
+    if (usersState.status !== 'all') params.set('status', usersState.status);
+    const data = await apiJson('/admin/users?' + params.toString());
+    const users = data?.users || [];
+    if (users.length === 0) {
+      list.innerHTML = '<div class="p-12 text-center text-slate-400">Sonuç yok</div>';
+      return;
+    }
+    list.innerHTML = users.map(u => userRow(u)).join('');
+    list.querySelectorAll('[data-user-id]').forEach(el => {
+      el.addEventListener('click', () => openUserDetail(el.dataset.userId));
+    });
+  } catch (err) {
+    list.innerHTML = '<div class="p-6 text-red-600">Hata: ' + err.message + '</div>';
+  }
+}
+
+function statusBadge(s) {
+  if (s === 'active') return '<span class="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 font-semibold">Aktif</span>';
+  if (s === 'suspended') return '<span class="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-semibold">Askıda</span>';
+  return '<span class="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-semibold">Yasaklı</span>';
+}
+
+function formatDateShort(iso) {
+  if (!iso) return 'hiç';
+  const d = new Date(iso);
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days === 0) return 'bugün';
+  if (days === 1) return 'dün';
+  if (days < 7) return days + ' gün önce';
+  return d.toLocaleDateString('tr-TR');
+}
+
+function userRow(u) {
+  return `
+    <div data-user-id="${u.id}" class="flex items-center gap-3 px-4 py-3 border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
+      <div class="w-10 h-10 rounded-full bg-[#1F4E79] text-white flex items-center justify-center font-bold text-lg flex-shrink-0">
+        ${(u.display_name || '?').charAt(0).toUpperCase()}
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <div class="font-semibold truncate">${u.display_name || '(isimsiz)'}</div>
+          ${statusBadge(u.status)}
+        </div>
+        <div class="text-xs text-slate-500 flex items-center gap-3 mt-0.5">
+          <span>📦 ${u.active_listing_count}</span>
+          ${u.reports_against > 0 ? '<span class="text-red-600 font-bold">⚠️ ' + u.reports_against + '</span>' : ''}
+          ${u.location_city ? '<span>📍 ' + u.location_city + '</span>' : ''}
+          <span class="ml-auto italic">${formatDateShort(u.last_active_at)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function openUserDetail(userId) {
+  openModal('<div class="p-16 flex justify-center"><div class="spinner"></div></div>');
+  try {
+    const data = await apiJson('/admin/users/' + userId);
+    renderUserDetailModal(data);
+  } catch (err) {
+    openModal('<div class="p-6 text-red-600">Hata: ' + err.message + '</div>');
+  }
+}
+
+function renderUserDetailModal(data) {
+  const { user, stats, recent_listings, recent_reports } = data;
+  const badge = statusBadge(user.status);
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-start gap-4">
+      <div class="w-16 h-16 rounded-2xl bg-[#1F4E79] text-white flex items-center justify-center font-bold text-3xl flex-shrink-0">
+        ${(user.display_name || '?').charAt(0).toUpperCase()}
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="text-xl font-bold">${user.display_name || '(isimsiz)'}</div>
+          ${badge}
+        </div>
+        ${user.bio ? '<div class="text-sm text-slate-600 mt-1">' + user.bio + '</div>' : ''}
+        <div class="text-xs text-slate-400 mt-2 font-mono select-all">${user.id}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+
+    <div class="p-6 grid grid-cols-2 gap-4 border-b border-slate-200 text-sm">
+      <div><span class="text-slate-500">Cinsiyet:</span> <b>${user.gender === 'female' ? 'Kadın' : user.gender === 'male' ? 'Erkek' : '—'}</b></div>
+      <div><span class="text-slate-500">Şehir:</span> <b>${user.location_city || '—'}</b></div>
+      <div><span class="text-slate-500">Kayıt:</span> <b>${new Date(user.created_at).toLocaleString('tr-TR')}</b></div>
+      <div><span class="text-slate-500">Son aktivite:</span> <b>${user.last_active_at ? new Date(user.last_active_at).toLocaleString('tr-TR') : '—'}</b></div>
+    </div>
+
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">İstatistikler</div>
+      <div class="grid grid-cols-3 gap-3 text-center">
+        ${statCell('📦', 'Aktif İlan', stats.listings_active, 'text-green-600')}
+        ${statCell('📚', 'Toplam İlan', stats.listings_total)}
+        ${statCell('💬', 'Mesaj', stats.messages_sent)}
+        ${statCell('💭', 'Sohbet', stats.conversations_count)}
+        ${statCell('⚠️', 'Aleyhine Şikayet', stats.reports_against, stats.reports_against > 0 ? 'text-red-600' : '')}
+        ${statCell('📢', 'Şikayet Etti', stats.reports_by)}
+        ${statCell('👥', 'Rehberde', stats.contacts_count)}
+        ${statCell('📱', 'Cihaz', stats.devices_count)}
+        ${statCell('🚫', 'Engel', stats.blocks_count)}
+      </div>
+    </div>
+
+    ${recent_listings.length > 0 ? `
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Son İlanlar</div>
+      ${recent_listings.map(l => `
+        <div class="py-2 border-b border-slate-100 last:border-0">
+          <div class="font-semibold text-sm">${l.title}</div>
+          <div class="text-xs text-slate-500">${Number(l.price).toLocaleString('tr-TR')} ₺ · ${l.status} · ${new Date(l.created_at).toLocaleDateString('tr-TR')}</div>
+        </div>`).join('')}
+    </div>` : ''}
+
+    ${recent_reports.length > 0 ? `
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Aleyhine Son Şikayetler</div>
+      ${recent_reports.map(r => `
+        <div class="py-2 border-b border-slate-100 last:border-0">
+          <div class="text-sm">💬 ${r.reason}</div>
+          <div class="text-xs text-slate-500 mt-0.5">${r.status} · ${new Date(r.created_at).toLocaleDateString('tr-TR')}</div>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <div class="p-6 flex flex-wrap gap-2">
+      ${userActionButtons(user)}
+    </div>
+  `;
+  document.getElementById('modal-content').innerHTML = html;
+}
+
+function statCell(icon, label, value, color) {
+  return `
+    <div class="p-3 bg-slate-50 rounded-lg">
+      <div class="text-xs text-slate-500">${icon} ${label}</div>
+      <div class="text-lg font-bold ${color || ''}">${(value ?? 0).toLocaleString('tr-TR')}</div>
+    </div>`;
+}
+
+function userActionButtons(user) {
+  const btns = [];
+  if (user.status === 'active') {
+    btns.push(`<button onclick="changeUserStatus('${user.id}', 'suspended', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-yellow-100 text-yellow-800 font-semibold hover:bg-yellow-200">⏸️ Askıya Al</button>`);
+    btns.push(`<button onclick="changeUserStatus('${user.id}', 'banned', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🚫 Kalıcı Yasakla</button>`);
+  } else if (user.status === 'suspended') {
+    btns.push(`<button onclick="changeUserStatus('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">✅ Askıdan Al</button>`);
+    btns.push(`<button onclick="changeUserStatus('${user.id}', 'banned', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🚫 Kalıcı Yasakla</button>`);
+  } else if (user.status === 'banned') {
+    btns.push(`<button onclick="changeUserStatus('${user.id}', 'active', '${(user.display_name || '').replace(/'/g, "\\'")}')" class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">🔓 Yasağı Kaldır</button>`);
+  }
+  return btns.join('');
+}
+
+async function changeUserStatus(userId, status, name) {
+  const labels = { active: 'aktif', suspended: 'askıya al', banned: 'kalıcı yasakla' };
+  if (!confirm(name + ' → "' + labels[status] + '"? Onaylıyor musun?')) return;
+  try {
+    await apiJson('/admin/users/' + userId + '/status', {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    });
+    closeModal();
+    loadUsers();
+    // Dashboard'a etkisi olacak — yenile
+    if (currentTab === 'dashboard') renderDashboard();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Şikayetler
+// ═══════════════════════════════════════════════════════════════
+
+let reportsState = { status: 'pending' };
+
+function reportsView() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="mb-4 flex gap-1">
+      ${['pending', 'action_taken', 'dismissed'].map(s => `
+        <button data-report-status="${s}" class="report-tab px-4 py-2 text-sm rounded-lg border ${reportsState.status === s ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-300'}">
+          ${ ({pending: 'Bekleyen', action_taken: 'Aksiyon Alındı', dismissed: 'Reddedildi'})[s] }
+        </button>`).join('')}
+    </div>
+    <div id="reports-list" class="space-y-3">
+      <div class="p-16 flex justify-center"><div class="spinner"></div></div>
+    </div>
+  `;
+  document.querySelectorAll('.report-tab').forEach(b => {
+    b.addEventListener('click', () => {
+      reportsState.status = b.dataset.reportStatus;
+      reportsView();
+    });
+  });
+  loadReports();
+}
+
+async function loadReports() {
+  const list = document.getElementById('reports-list');
+  try {
+    const data = await apiJson('/admin/reports?status=' + reportsState.status);
+    const reports = data?.reports || [];
+    if (reports.length === 0) {
+      list.innerHTML = '<div class="bg-white rounded-xl border border-slate-200 p-12 text-center"><div class="text-4xl mb-2">✅</div><div class="text-slate-500">Bu durumda şikayet yok</div></div>';
+      return;
+    }
+    list.innerHTML = reports.map(r => reportCard(r)).join('');
+    list.querySelectorAll('[data-report-id]').forEach(el => {
+      el.addEventListener('click', () => openReportDetail(el.dataset.reportId));
+    });
+  } catch (err) {
+    list.innerHTML = '<div class="text-red-600 bg-red-50 p-4 rounded-lg">Hata: ' + err.message + '</div>';
+  }
+}
+
+function reportCard(r) {
+  const typeIcon = r.target_type === 'listing' ? '📦' : r.target_type === 'message' ? '💬' : '👤';
+  const typeLabel = r.target_type === 'listing' ? 'İlan' : r.target_type === 'message' ? 'Mesaj' : 'Kullanıcı';
+  return `
+    <div data-report-id="${r.id}" class="card cursor-pointer hover:bg-slate-50">
+      <div class="flex items-center gap-3 mb-2">
+        <div class="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center text-xl">${typeIcon}</div>
+        <div class="flex-1">
+          <div class="font-bold">${typeLabel} şikayeti</div>
+          <div class="text-xs text-slate-500">${new Date(r.created_at).toLocaleString('tr-TR')}</div>
+        </div>
+      </div>
+      <div class="text-sm text-slate-700 line-clamp-2">💬 ${r.reason}</div>
+      <div class="text-xs text-slate-500 mt-2">📩 ${r.reporter_name || 'Bilinmiyor'}</div>
+    </div>`;
+}
+
+async function openReportDetail(reportId) {
+  openModal('<div class="p-16 flex justify-center"><div class="spinner"></div></div>');
+  try {
+    const data = await apiJson('/admin/reports/' + reportId);
+    renderReportDetailModal(data);
+  } catch (err) {
+    openModal('<div class="p-6 text-red-600">Hata: ' + err.message + '</div>');
+  }
+}
+
+function renderReportDetailModal(data) {
+  const r = data.report || data;
+  const target = data.target || {};
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-start justify-between">
+      <div>
+        <div class="text-lg font-bold">Şikayet Detayı</div>
+        <div class="text-xs text-slate-500 mt-1">${new Date(r.created_at).toLocaleString('tr-TR')}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-3 text-sm">
+      <div><span class="text-slate-500">Hedef Tipi:</span> <b>${r.target_type}</b></div>
+      <div><span class="text-slate-500">Hedef ID:</span> <span class="font-mono text-xs select-all">${r.target_id}</span></div>
+      <div><span class="text-slate-500">Şikayet:</span> <div class="mt-1 p-3 bg-yellow-50 rounded-lg border border-yellow-200">💬 ${r.reason}</div></div>
+      ${r.detail ? `<div><span class="text-slate-500">Detay:</span> <div class="mt-1 p-3 bg-slate-50 rounded-lg">${r.detail}</div></div>` : ''}
+      ${r.reporter_name ? `<div><span class="text-slate-500">Şikayet eden:</span> <b>${r.reporter_name}</b></div>` : ''}
+      ${target.title ? `<div><span class="text-slate-500">İlan başlığı:</span> <b>${target.title}</b></div>` : ''}
+      ${target.display_name ? `<div><span class="text-slate-500">Hedef kullanıcı:</span> <b>${target.display_name}</b></div>` : ''}
+      <div><span class="text-slate-500">Durum:</span> <b>${r.status}</b></div>
+      ${r.reviewer_notes ? `<div><span class="text-slate-500">Not:</span> <div class="mt-1 italic text-green-700">${r.reviewer_notes}</div></div>` : ''}
+    </div>
+    ${r.status === 'pending' ? `
+    <div class="p-6 border-t border-slate-200 space-y-2">
+      <button onclick="reportAction('${r.id}', 'delete_content')" class="w-full px-4 py-3 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">🗑️ İçeriği Sil</button>
+      <button onclick="reportAction('${r.id}', 'suspend_user')" class="w-full px-4 py-3 rounded-lg bg-yellow-100 text-yellow-800 font-semibold hover:bg-yellow-200">⏸️ Kullanıcıyı Askıya Al</button>
+      <button onclick="reportAction('${r.id}', 'dismiss')" class="w-full px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">✖️ Şikayeti Reddet</button>
+    </div>` : ''}
+  `;
+  document.getElementById('modal-content').innerHTML = html;
+}
+
+async function reportAction(reportId, action) {
+  const notes = prompt('Not (opsiyonel):') || '';
+  try {
+    await apiJson('/admin/reports/' + reportId + '/action', {
+      method: 'POST',
+      body: JSON.stringify({ action, reviewer_notes: notes }),
+    });
+    closeModal();
+    loadReports();
+    if (currentTab === 'dashboard') renderDashboard();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Modal
+// ═══════════════════════════════════════════════════════════════
+
+function openModal(html) {
+  document.getElementById('modal-content').innerHTML = html;
+  document.getElementById('modal').classList.remove('hidden');
+}
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+}
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target.id === 'modal') closeModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Wrappers (single call site helpers)
+// ═══════════════════════════════════════════════════════════════
+
+function renderDashboard_() { return renderDashboard(); }
+function renderUsers() { return usersView(); }
+function renderReports() { return reportsView(); }
+
+// ═══════════════════════════════════════════════════════════════
+// Init & Event Listeners
+// ═══════════════════════════════════════════════════════════════
+
+document.querySelectorAll('.tab-btn').forEach(b => {
+  b.addEventListener('click', () => switchTab(b.dataset.tab));
+});
+
+document.getElementById('logout-btn').addEventListener('click', logout);
+
+document.getElementById('refresh-btn').addEventListener('click', () => {
+  switchTab(currentTab);
+});
+
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = document.getElementById('login-error');
+  err.classList.add('hidden');
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  btn.textContent = 'Giriş yapılıyor...';
+  try {
+    const phone = document.getElementById('phone').value;
+    const pin = document.getElementById('pin').value;
+    await doLogin(phone, pin);
+    showMain();
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Giriş Yap';
+  }
+});
+
+// Otomatik refresh — her 30 saniyede bir dashboard
+setInterval(() => {
+  if (currentTab === 'dashboard' && !document.getElementById('main-view').classList.contains('hidden')) {
+    renderDashboard();
+  }
+}, 30_000);
+
+// Boot: token varsa direkt panel'e gir
+(async function boot() {
+  const access = localStorage.getItem(LS_ACCESS);
+  if (!access) {
+    showLogin();
+    return;
+  }
+  try {
+    const me = await apiJson('/users/me');
+    if (!me?.user?.is_admin) {
+      logout();
+      return;
+    }
+    localStorage.setItem(LS_USER, JSON.stringify(me.user));
+    showMain();
+  } catch {
+    logout();
+  }
+})();
+</script>
+
+</body>
+</html>

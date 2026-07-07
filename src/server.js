@@ -47,6 +47,28 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 100 }));
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+// Web Admin Paneli (macOS/tarayıcı için) — backend/public/panel/index.html
+// Rate limit dışında bırak (statik HTML — güvenlik için hâlâ /admin/* API'leri JWT ister)
+const path = require('path');
+// Helmet default CSP'si Tailwind CDN + inline scripti bloke ediyor → /panel için gevşet
+app.use('/panel', (req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; " +
+    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; " +
+    "connect-src 'self' https:; " +
+    "img-src 'self' data: https:; " +
+    "font-src 'self' data:;"
+  );
+  next();
+}, express.static(path.join(__dirname, '..', 'public', 'panel'), {
+  maxAge: '1h',
+  index: 'index.html',
+}));
+// Trailing slash olmayan istekler için de aç
+app.get('/panel', (req, res) => res.redirect('/panel/'));
+
 // OTP istek limiti (kötüye kullanım önleme)
 const otpLimiter = rateLimit({ windowMs: 60 * 1000, max: 1, keyGenerator: (req) => req.body?.phone || req.ip });
 app.use('/auth/request-otp', otpLimiter);
