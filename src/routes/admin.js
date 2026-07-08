@@ -1018,10 +1018,33 @@ router.get('/system/server-info', requireAuth, requireAdmin, async (req, res, ne
       },
     };
 
-    // DB size
+    // DB size + limit
     try {
       const dbSize = await pool.query('SELECT pg_database_size(current_database()) AS bytes');
       info.db_size_mb = Math.round(Number(dbSize.rows[0].bytes) / 1024 / 1024);
+      // Railway plan limit'i env'den (5 GB hobby, 100 GB pro — kullanıcı ayarlar)
+      const limitMb = parseInt(process.env.DB_VOLUME_LIMIT_MB || '5120', 10);
+      info.db_size_limit_mb = limitMb;
+      info.db_size_percent = Math.round((info.db_size_mb / limitMb) * 100);
+    } catch {}
+
+    // DB row sayıları — hangi tablo ne kadar yer kaplıyor (upgrade karar vermek için)
+    try {
+      const tables = await pool.query(
+        `SELECT relname AS table,
+                pg_total_relation_size(C.oid) AS size_bytes,
+                pg_size_pretty(pg_total_relation_size(C.oid)) AS size_pretty
+         FROM pg_class C
+         LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
+         WHERE nspname NOT IN ('pg_catalog', 'information_schema') AND C.relkind = 'r'
+         ORDER BY pg_total_relation_size(C.oid) DESC
+         LIMIT 10`
+      );
+      info.top_tables = tables.rows.map((t) => ({
+        table: t.table,
+        size_mb: Math.round(Number(t.size_bytes) / 1024 / 1024),
+        size_pretty: t.size_pretty,
+      }));
     } catch {}
 
     res.json(info);

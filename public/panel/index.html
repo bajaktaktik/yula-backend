@@ -2206,9 +2206,60 @@ async function loadSystemOverview() {
         <div class="card card-lg ${dbPoolWarn ? 'border-red-400' : ''}" style="border-left-color: ${dbPoolWarn ? '#dc2626' : '#8b5cf6'};">
           <div class="text-xs text-slate-500 font-semibold uppercase">🐘 DB Pool</div>
           <div class="text-2xl font-extrabold mt-2">${server.db_pool.total}<span class="text-base text-slate-500"> / ${server.db_pool.idle} idle</span></div>
-          <div class="text-xs ${dbPoolWarn ? 'text-red-600 font-bold' : 'text-slate-500'} mt-1">Bekleyen: ${server.db_pool.waiting}${server.db_size_mb ? ' · Boyut: ' + server.db_size_mb + ' MB' : ''}</div>
+          <div class="text-xs ${dbPoolWarn ? 'text-red-600 font-bold' : 'text-slate-500'} mt-1">Bekleyen: ${server.db_pool.waiting}</div>
         </div>
       </div>
+
+      ${server.db_size_mb != null ? `
+      <div class="mb-4">
+        <div class="text-xs font-bold text-slate-500 uppercase mb-2">💽 Disk Kullanımı</div>
+        <div class="card">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <span class="text-2xl font-extrabold">${server.db_size_mb.toLocaleString('tr-TR')} MB</span>
+              <span class="text-sm text-slate-500"> / ${(server.db_size_limit_mb || 0).toLocaleString('tr-TR')} MB</span>
+            </div>
+            <div class="text-right">
+              <div class="text-2xl font-extrabold ${server.db_size_percent >= 90 ? 'text-red-600' : server.db_size_percent >= 75 ? 'text-yellow-600' : 'text-green-600'}">
+                %${server.db_size_percent || 0}
+              </div>
+              <div class="text-xs text-slate-500">${server.db_size_percent >= 90 ? '⚠ Kritik' : server.db_size_percent >= 75 ? '⚠ Yüksek' : 'Normal'}</div>
+            </div>
+          </div>
+          <div class="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
+            <div class="h-full transition-all ${server.db_size_percent >= 90 ? 'bg-red-500' : server.db_size_percent >= 75 ? 'bg-yellow-500' : 'bg-green-500'}"
+              style="width: ${Math.min(100, server.db_size_percent || 0)}%"></div>
+          </div>
+          ${(server.db_size_limit_mb || 0) === 5120 ? '<div class="text-xs text-slate-400 mt-2 italic">Limit varsayılan (5 GB Hobby plan). Kendi plan\'ına göre Railway env\'de DB_VOLUME_LIMIT_MB ayarla.</div>' : ''}
+        </div>
+      </div>` : ''}
+
+      ${server.top_tables && server.top_tables.length > 0 ? `
+      <div class="mb-4">
+        <div class="text-xs font-bold text-slate-500 uppercase mb-2">📊 En Büyük Tablolar</div>
+        <div class="card">
+          <table class="w-full text-sm">
+            <thead class="text-xs text-slate-500 uppercase">
+              <tr>
+                <th class="p-1.5 text-left">Tablo</th>
+                <th class="p-1.5 text-right">Boyut</th>
+                <th class="p-1.5 text-right">% (toplamdan)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${server.top_tables.map(t => {
+                const pct = server.db_size_mb > 0 ? Math.round((t.size_mb / server.db_size_mb) * 100) : 0;
+                return `
+                <tr class="border-t border-slate-100">
+                  <td class="p-1.5 font-mono text-xs">${t.table}</td>
+                  <td class="p-1.5 text-right font-semibold">${t.size_pretty}</td>
+                  <td class="p-1.5 text-right text-slate-500 text-xs">%${pct}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
 
       <div class="grid grid-cols-3 gap-4">
         <div class="card">
