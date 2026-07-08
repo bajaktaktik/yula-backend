@@ -3,10 +3,32 @@
 // - Kod üretimi, gönderimi, doğrulaması Twilio'da olur
 // - Türkiye için optimize routing (A2P/local sender ID)
 // - Rate limiting + brute-force koruması built-in
+//
+// NOT: Her gönderim sms_log tablosuna kaydedilir — panel'de takip için.
 
 const config = require('../config');
+const pool = require('../db/pool');
 
 const SERVICE_SID = process.env.TWILIO_VERIFY_SID;
+
+function maskPhone(phone) {
+  if (!phone) return '?';
+  const s = String(phone);
+  if (s.length < 8) return s;
+  return s.slice(0, 5) + '*****' + s.slice(-2);
+}
+
+async function logSms({ phone, purpose, status, error, duration_ms }) {
+  try {
+    await pool.query(
+      `INSERT INTO sms_log (provider, phone_masked, purpose, status, error, duration_ms)
+       VALUES ('twilio-verify', $1, $2, $3, $4, $5)`,
+      [maskPhone(phone), purpose || null, status, error || null, duration_ms || null]
+    );
+  } catch (e) {
+    console.error('[verify] log fail:', e.message);
+  }
+}
 
 function getClient() {
   if (!config.sms.twilio.sid || !config.sms.twilio.token) {
@@ -16,12 +38,30 @@ function getClient() {
 }
 
 async function startVerification(e164) {
-  const client = getClient();
-  const verification = await client.verify.v2
-    .services(SERVICE_SID)
-    .verifications
-    .create({ to: e164, channel: 'sms', locale: 'tr' });
-  return verification.status; // 'pending'
+  const start = Date.now();
+  try {
+    const client = getClient();
+    const verification = await client.verify.v2
+      .services(SERVICE_SID)
+      .verifications
+      .create({ to: e164, channel: 'sms', locale: 'tr' });
+    await logSms({
+      phone: e164,
+      purpose: 'otp',
+      status: 'sent',
+      duration_ms: Date.now() - start,
+    });
+    return verification.status; // 'pending'
+  } catch (err) {
+    await logSms({
+      phone: e164,
+      purpose: 'otp',
+      status: 'failed',
+      error: err?.message?.slice(0, 300),
+      duration_ms: Date.now() - start,
+    });
+    throw err;
+  }
 }
 
 async function checkVerification(e164, code) {
