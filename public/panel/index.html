@@ -117,7 +117,15 @@
   <main class="flex-1 overflow-auto">
     <!-- Header -->
     <header class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between sticky top-0 z-10">
-      <h2 id="page-title" class="text-lg font-bold">Dashboard</h2>
+      <div class="flex items-center gap-4">
+        <h2 id="page-title" class="text-lg font-bold">Dashboard</h2>
+        <div class="flex items-center gap-2 text-xs">
+          <span class="text-slate-500">🚀 Proje başlangıcı:</span>
+          <span class="font-mono font-semibold text-[#1F4E79]">26.05.2026 · 20:36</span>
+          <span class="mx-1 text-slate-300">·</span>
+          <span id="project-age" class="font-mono font-bold text-purple-700"></span>
+        </div>
+      </div>
       <div class="flex items-center gap-3">
         <span id="last-updated" class="text-xs text-slate-500"></span>
         <button id="refresh-btn" class="text-slate-600 hover:text-slate-900 p-2 rounded-lg hover:bg-slate-100">🔄</button>
@@ -2762,6 +2770,25 @@ setInterval(() => {
     renderDashboard();
   }
 }, 30_000);
+
+// Canlı proje yaşı sayacı — 26 Mayıs 2026 20:36 (ilk commit)
+const PROJECT_START = new Date('2026-05-26T20:36:54+03:00');
+function updateProjectAge() {
+  const now = new Date();
+  const diffMs = now.getTime() - PROJECT_START.getTime();
+  if (diffMs < 0) return;
+  const totalSec = Math.floor(diffMs / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  const el = document.getElementById('project-age');
+  if (el) {
+    el.textContent = `${days}g ${String(hours).padStart(2, '0')}s ${String(mins).padStart(2, '0')}dk ${String(secs).padStart(2, '0')}sn`;
+  }
+}
+setInterval(updateProjectAge, 1000);
+updateProjectAge();
 
 // Boot: token varsa direkt panel'e gir
 (async function boot() {
