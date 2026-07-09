@@ -121,7 +121,7 @@
         <h2 id="page-title" class="text-lg font-bold">Dashboard</h2>
         <div class="flex items-center gap-2 text-xs">
           <span class="text-slate-500">🚀 Proje başlangıcı:</span>
-          <span class="font-mono font-semibold text-[#1F4E79]">26.05.2026 · 20:36</span>
+          <span class="font-mono font-semibold text-[#1F4E79]">21.05.2026 · 13:00</span>
           <span class="mx-1 text-slate-300">·</span>
           <span id="project-age" class="font-mono font-bold text-purple-700"></span>
         </div>
@@ -2771,8 +2771,8 @@ setInterval(() => {
   }
 }, 30_000);
 
-// Canlı proje yaşı sayacı — 26 Mayıs 2026 20:36 (ilk commit)
-const PROJECT_START = new Date('2026-05-26T20:36:54+03:00');
+// Canlı proje yaşı sayacı — 21 Mayıs 2026 13:00 (mobile skeleton ilk oluşturuldu)
+const PROJECT_START = new Date('2026-05-21T13:00:00+03:00');
 function updateProjectAge() {
   const now = new Date();
   const diffMs = now.getTime() - PROJECT_START.getTime();
