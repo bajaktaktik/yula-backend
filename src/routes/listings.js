@@ -520,6 +520,35 @@ router.post('/', requireAuth, async (req, res, next) => {
       );
     }
     await client.query('COMMIT');
+
+    // Admin bildirimi — yeni ilan (arka planda, ilan cevabını geciktirmez)
+    // Kendi ilanı ise admin'e kendine push atmayı önle (excludeUserId)
+    (async () => {
+      try {
+        const { sendToAllAdmins } = require('../services/push');
+        const uRes = await pool.query(
+          `SELECT REGEXP_REPLACE(COALESCE(display_name, ''), '^\\[DEMO\\] ', '') AS name
+           FROM users WHERE id = $1`,
+          [req.userId]
+        );
+        const senderName = uRes.rows[0]?.name || 'Bir kullanıcı';
+        await sendToAllAdmins(
+          {
+            title: '📦 Yeni İlan',
+            body: `${senderName}: ${listing.title}`,
+            data: {
+              type: 'admin_new_listing',
+              listing_id: listing.id,
+              user_id: req.userId,
+            },
+          },
+          req.userId // kendi ilanı ise kendine push atma
+        );
+      } catch (e) {
+        console.error('[listings] admin notify fail:', e.message);
+      }
+    })();
+
     res.status(201).json({ listing });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});

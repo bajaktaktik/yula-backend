@@ -164,4 +164,48 @@ async function sendToUser(userId, payload) {
   }
 }
 
-module.exports = { sendToUser };
+// Tüm admin'lere push + in-app notif — yeni kayıt / yeni ilan bildirimleri için
+// excludeUserId: admin kendi eylemini yaparsa kendine push atmayı önler
+async function sendToAllAdmins(payload, excludeUserId = null) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id FROM users WHERE role = 'admin' AND status = 'active'`
+    );
+    const targets = excludeUserId
+      ? rows.filter((r) => r.id !== excludeUserId)
+      : rows;
+    if (targets.length === 0) return;
+
+    console.log(`[push] sendToAllAdmins → ${targets.length} admin, type=${payload?.data?.type || 'generic'}`);
+
+    // In-app notification (Bildirimler ekranında görünsün)
+    for (const t of targets) {
+      try {
+        await pool.query(
+          `INSERT INTO notifications (user_id, type, payload)
+           VALUES ($1, $2, $3::jsonb)`,
+          [t.id, payload?.data?.type || 'admin_notify', JSON.stringify({
+            title: payload.title,
+            body: payload.body,
+            ...payload.data,
+          })]
+        );
+      } catch (e) {
+        console.error(`[push] admin in-app fail user=${t.id}:`, e.message);
+      }
+    }
+
+    // Push notification — cihazı varsa
+    await Promise.all(
+      targets.map((t) =>
+        sendToUser(t.id, payload).catch((err) => {
+          console.error(`[push] admin push fail user=${t.id}:`, err.message);
+        })
+      )
+    );
+  } catch (err) {
+    console.error('[push] sendToAllAdmins fail:', err.message);
+  }
+}
+
+module.exports = { sendToUser, sendToAllAdmins };

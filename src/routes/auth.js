@@ -105,6 +105,20 @@ router.post('/register-pin', async (req, res, next) => {
       }
     }
 
+    // Admin bildirimi — tüm admin'lere yeni kullanıcı push'u (arka planda, kayıt akışını bloke etmez)
+    (async () => {
+      try {
+        const { sendToAllAdmins } = require('../services/push');
+        await sendToAllAdmins({
+          title: '👤 Yeni Kullanıcı',
+          body: `${user.display_name || 'Bir kullanıcı'} Abadan'a kaydoldu`,
+          data: { type: 'admin_new_user', user_id: user.id },
+        });
+      } catch (e) {
+        console.error('[register] admin notify fail:', e.message);
+      }
+    })();
+
     res.json({
       user,
       tokens: { access: signAccess(user.id), refresh: signRefresh(user.id) },
