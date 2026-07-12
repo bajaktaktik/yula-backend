@@ -136,6 +136,8 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_at TIMESTAMPTZ;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
 -- Admin öne çıkarma — bu tarih geçince otomatik normal ilan
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
+-- İlan detay görüntülenme sayacı (kaç kez ilan detay sayfası açıldı — sahip hariç)
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS view_count INT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_listings_featured ON listings(featured_until DESC) WHERE featured_until IS NOT NULL;
 
 -- Sistem izleme: SMS gönderim logu (PII korumalı — telefon maskeli)

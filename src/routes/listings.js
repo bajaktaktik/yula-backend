@@ -418,7 +418,9 @@ router.get('/:id', requireAuth, async (req, res, next) => {
               (SELECT json_agg(p.url ORDER BY p.ordering) FROM listing_photos p WHERE p.listing_id = l.id) AS photos,
               (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering) FROM listing_photos p WHERE p.listing_id = l.id) AS photo_thumbs,
               EXISTS(SELECT 1 FROM favorites WHERE user_id = $2 AND listing_id = l.id) AS is_favorite,
-              EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $2 AND listing_id = l.id) AS is_hidden
+              EXISTS(SELECT 1 FROM hidden_listings WHERE user_id = $2 AND listing_id = l.id) AS is_hidden,
+              -- Görüntülenme: uygulama içi (listings.view_count) + dış paylaşım linkleri (listing_shares.view_count sum)
+              COALESCE((SELECT SUM(view_count)::int FROM listing_shares WHERE listing_id = l.id), 0) AS share_views
        FROM listings l
        JOIN users u ON u.id = l.user_id
        LEFT JOIN user_contacts uc ON uc.user_id = $2 AND uc.contact_phone_hash = u.phone_hash
@@ -456,6 +458,18 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 
     const isSecond = tier === 2;
 
+    // View sayacını artır — sahibi hariç herkes. Async, response'u geciktirmesin.
+    if (!isOwn) {
+      pool.query(
+        'UPDATE listings SET view_count = view_count + 1 WHERE id = $1',
+        [req.params.id]
+      ).catch((e) => console.error('[listings] view_count update fail:', e.message));
+    }
+
+    const appViews = Number(listing.view_count || 0);
+    const shareViews = Number(listing.share_views || 0);
+    const totalViews = appViews + shareViews;
+
     res.json({
       ...listing,
       // 2. derece için gerçek isim gizli
@@ -471,6 +485,10 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       photos: listing.photos || [],
       photo_thumbs: listing.photo_thumbs || [],
       restricted_to_gender: isOwn ? listing.restricted_to_gender : undefined,
+      // Görüntülenme sayıları
+      view_count: appViews,       // uygulama içi
+      share_views: shareViews,     // dış paylaşım linki tıklamaları
+      total_views: totalViews,     // toplam (bu request sayılmadan önce; UI için önemli değil)
     });
   } catch (err) {
     next(err);
