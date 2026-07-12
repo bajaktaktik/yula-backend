@@ -458,12 +458,27 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 
     const isSecond = tier === 2;
 
-    // View sayacını artır — sahibi hariç herkes. Async, response'u geciktirmesin.
+    // View sayacı — UNIQUE user bazında. Aynı kişi defalarca açsa 1 kez sayılır.
+    // Sahibi hariç. Async: response'u geciktirmez.
     if (!isOwn) {
-      pool.query(
-        'UPDATE listings SET view_count = view_count + 1 WHERE id = $1',
-        [req.params.id]
-      ).catch((e) => console.error('[listings] view_count update fail:', e.message));
+      (async () => {
+        try {
+          const ins = await pool.query(
+            `INSERT INTO listing_views (listing_id, viewer_user_id)
+             VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [req.params.id, req.userId]
+          );
+          // Sadece ilk kez ise counter'ı artır (aynı kişi tekrar açarsa rowCount=0)
+          if (ins.rowCount > 0) {
+            await pool.query(
+              'UPDATE listings SET view_count = view_count + 1 WHERE id = $1',
+              [req.params.id]
+            );
+          }
+        } catch (e) {
+          console.error('[listings] view track fail:', e.message);
+        }
+      })();
     }
 
     const appViews = Number(listing.view_count || 0);

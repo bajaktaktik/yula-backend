@@ -136,8 +136,19 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_at TIMESTAMPTZ;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
 -- Admin öne çıkarma — bu tarih geçince otomatik normal ilan
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
--- İlan detay görüntülenme sayacı (kaç kez ilan detay sayfası açıldı — sahip hariç)
+-- İlan detay görüntülenme sayacı (UNIQUE kişi sayısı — aynı kullanıcı defalarca açsa 1 kez sayılır)
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS view_count INT NOT NULL DEFAULT 0;
+
+-- Unique görüntüleme kaydı — hangi user hangi ilanı gördü
+-- INSERT ON CONFLICT DO NOTHING ile aynı user tekrar açsa yeni row eklenmez
+-- Uygulama katmanı, sadece ilk INSERT'te listings.view_count'u artırır
+CREATE TABLE IF NOT EXISTS listing_views (
+  listing_id       UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  viewer_user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  first_viewed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (listing_id, viewer_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_views_viewer ON listing_views(viewer_user_id, first_viewed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_listings_featured ON listings(featured_until DESC) WHERE featured_until IS NOT NULL;
 
 -- Sistem izleme: SMS gönderim logu (PII korumalı — telefon maskeli)
