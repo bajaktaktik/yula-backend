@@ -45,9 +45,33 @@ function fakeHash(seed) {
 /**
  * Reviewer login olduğunda çağrılır. Async ve fire-and-forget olabilir
  * (login response'unu beklemesin diye).
+ *
+ * ÖNEMLİ: Sadece reviewer'ın rehberi tamamen boşsa çalışır.
+ * - Rehberde daha önce eklenmiş demo tanıdıklar varsa (hatta silinip kaldırıldıysa da) → çalışmaz
+ * - Reviewer manuel silme yaparsa, tekrar seed yapılmaz
+ * Bu sayede admin panelden demo ilanları kalıcı olarak silebilir.
+ *
+ * REVIEWER_SEED_DISABLE=true env değeri ile tamamen kapatılabilir.
  */
 async function ensureReviewerSeed(reviewerUserId) {
   try {
+    // Env ile tamamen kapatılabilir
+    if (process.env.REVIEWER_SEED_DISABLE === 'true' || process.env.REVIEWER_SEED_DISABLE === '1') {
+      return;
+    }
+
+    // Rehber daha önce doldurulmuş mu? (herhangi bir contact varsa seed atlanır)
+    // Bu sayede reviewer bir kez giriş yaptıktan sonra tekrar demo veriler oluşturulmaz.
+    // Admin panelden ilan/kullanıcı silmek isterse, sonraki loginlerde geri gelmez.
+    const existingContacts = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM user_contacts WHERE user_id = $1',
+      [reviewerUserId]
+    );
+    if (existingContacts.rows[0].n > 0) {
+      console.log(`[reviewer-seed] user=${reviewerUserId} — rehber zaten dolu, seed atlandı`);
+      return;
+    }
+
     // 1) Fake users — varsa atla, yoksa yarat
     const userIds = {};
     for (const u of FAKE_USERS) {
@@ -87,11 +111,7 @@ async function ensureReviewerSeed(reviewerUserId) {
       );
 
       if (existing.rows.length > 0) {
-        // Var → created_at'i tazele (Vitrin'de görünmeye devam etsin)
-        await pool.query(
-          `UPDATE listings SET created_at = ${createdAt} WHERE id = $1`,
-          [existing.rows[0].id]
-        );
+        // Var → dokunma. Admin silmiş olabilir, tekrar oluşturma veya taze göster yok.
         continue;
       }
 
