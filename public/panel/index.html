@@ -449,6 +449,43 @@ async function renderDashboard() {
       </div>
 
       <div class="mb-2 flex items-center gap-2">
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Push Bildirim Sağlığı</span>
+        <span class="text-xs text-slate-400 italic">(bildirim ulaşabilirlik oranı)</span>
+      </div>
+      <div class="grid grid-cols-3 gap-4 mb-6">
+        ${metricCard('✅', 'Push İzinli', d.users_with_device, {
+          text: d.users_total > 0
+            ? '%' + Math.round((d.users_with_device / d.users_total) * 100) + ' — bildirim alabilir'
+            : '',
+          color: 'text-green-600',
+        }, '#16a34a')}
+        ${(function() {
+          const pct = d.users_total > 0 ? Math.round((d.users_without_device / d.users_total) * 100) : 0;
+          const isBad = pct >= 40;
+          return `
+          <div class="card card-lg ${isBad ? 'cursor-pointer hover:bg-slate-50' : ''}" style="border-left-color: ${isBad ? '#dc2626' : '#f59e0b'};"
+               ${isBad ? 'data-goto-no-device="1"' : ''}>
+            <div class="flex items-center gap-2 text-xs text-slate-500 font-semibold uppercase tracking-wide">
+              <span>🔕</span> Push İzinsiz
+            </div>
+            <div class="flex items-baseline gap-2 mt-2">
+              <div class="text-3xl font-extrabold">${(d.users_without_device ?? 0).toLocaleString('tr-TR')}</div>
+              <div class="text-sm ${isBad ? 'text-red-600 font-bold' : 'text-slate-500'}">%${pct}</div>
+            </div>
+            <div class="text-xs ${isBad ? 'text-red-600 font-bold' : 'text-slate-500'} mt-1">
+              ${isBad ? '⚠ Yüksek — kampanya gerekli · → Listeye git' : 'bildirim ulaşamıyor'}
+            </div>
+          </div>`;
+        })()}
+        ${metricCard('📱', 'Toplam Cihaz', d.devices_total, {
+          text: d.users_with_device > 0
+            ? '~' + (Math.round((d.devices_total / d.users_with_device) * 10) / 10) + ' cihaz/kullanıcı'
+            : '',
+          color: 'text-slate-500',
+        }, '#0ea5e9')}
+      </div>
+
+      <div class="mb-2 flex items-center gap-2">
         <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Potansiyel Havuz</span>
         <span class="text-xs text-slate-400 italic">(rehberlerdeki mükerrer olmayan farklı telefonlar)</span>
       </div>
@@ -527,7 +564,14 @@ async function renderDashboard() {
     // "Az rehberli" kartlarına click handler ekle → Kullanıcılar sekmesine göndersin
     c.querySelectorAll('[data-quick-filter]').forEach(el => {
       el.addEventListener('click', () => {
-        usersState = { q: '', status: 'all', sortBy: 'low_contacts' };
+        usersState = { q: '', status: 'all', sortBy: 'low_contacts', hasDevice: 'all' };
+        switchTab('users');
+      });
+    });
+    // Push izinsiz kartına click → cihazı olmayan kullanıcı listesi
+    c.querySelectorAll('[data-goto-no-device]').forEach(el => {
+      el.addEventListener('click', () => {
+        usersState = { q: '', status: 'all', sortBy: 'recent', hasDevice: 'false' };
         switchTab('users');
       });
     });
@@ -551,7 +595,7 @@ function updateReportsBadge(n) {
 // Kullanıcılar
 // ═══════════════════════════════════════════════════════════════
 
-let usersState = { q: '', status: 'all', sortBy: 'recent' };
+let usersState = { q: '', status: 'all', sortBy: 'recent', hasDevice: 'all' };
 let selectedUserIds = new Set(); // Toplu mesaj için seçili kullanıcılar
 let currentUsersList = []; // Son yüklenen liste (seç/hepsini seç için)
 // Client-side tablo sıralaması (backend sıralamasından bağımsız)
@@ -613,6 +657,18 @@ function usersView() {
         </button>`).join('')}
     </div>
 
+    <div class="mb-3 flex flex-wrap gap-1 items-center">
+      <span class="text-xs text-slate-500 mr-2">📱 Push:</span>
+      ${[
+        { key: 'all', label: 'Tümü' },
+        { key: 'true', label: '✅ İzinli (cihaz kayıtlı)' },
+        { key: 'false', label: '🔕 İzinsiz (cihaz yok)' },
+      ].map(f => `
+        <button data-device="${f.key}" class="device-chip px-3 py-1.5 text-xs rounded-lg border ${usersState.hasDevice === f.key ? 'bg-emerald-700 text-white border-emerald-700' : 'bg-white border-slate-300 text-slate-700'}">
+          ${f.label}
+        </button>`).join('')}
+    </div>
+
     <!-- Toplu aksiyon toolbar — seçim varsa görünür -->
     <div id="bulk-toolbar" class="hidden mb-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 flex items-center gap-3">
       <span class="text-sm font-semibold text-blue-900"><span id="selected-count">0</span> kullanıcı seçildi</span>
@@ -651,6 +707,13 @@ function usersView() {
       loadUsers();
     });
   });
+  document.querySelectorAll('.device-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      usersState.hasDevice = b.dataset.device;
+      usersView();
+      loadUsers();
+    });
+  });
 
   loadUsers();
 }
@@ -662,6 +725,7 @@ async function loadUsers() {
     if (usersState.q) params.set('q', usersState.q);
     if (usersState.status !== 'all') params.set('status', usersState.status);
     if (usersState.sortBy && usersState.sortBy !== 'recent') params.set('sortBy', usersState.sortBy);
+    if (usersState.hasDevice && usersState.hasDevice !== 'all') params.set('hasDevice', usersState.hasDevice);
     const data = await apiJson('/admin/users?' + params.toString());
     const users = data?.users || [];
     currentUsersList = users;

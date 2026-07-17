@@ -328,6 +328,12 @@ router.get('/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
            SELECT user_id FROM user_contacts GROUP BY user_id HAVING COUNT(*) >= 20
          ) t)                                                                                                     AS users_healthy_contacts,
 
+        -- PUSH SAĞLIĞI (bildirim ulaşabilirlik)
+        (SELECT COUNT(DISTINCT user_id)::int FROM device_tokens)                                                  AS users_with_device,
+        (SELECT COUNT(*)::int FROM users u WHERE NOT EXISTS
+           (SELECT 1 FROM device_tokens WHERE user_id = u.id))                                                    AS users_without_device,
+        (SELECT COUNT(*)::int FROM device_tokens)                                                                 AS devices_total,
+
         -- POTANSİYEL KULLANICI HAVUZU
         -- Rehberlerde toplam kaç FARKLI telefon var (mükerrer sayılmaz) — Abadan'ın erişebileceği potansiyel
         (SELECT COUNT(DISTINCT contact_phone_hash)::int FROM user_contacts)                                       AS unique_contacts_pool,
@@ -376,6 +382,15 @@ router.get('/users', requireAuth, requireAdmin, async (req, res, next) => {
       params.push(status);
       conds.push(`u.status = $${params.length}`);
     }
+
+    // Push izni filtresi: hasDevice=true → cihaz kayıtlı olanlar, false → olmayanlar
+    const hasDevice = String(req.query.hasDevice || '');
+    if (hasDevice === 'true') {
+      conds.push(`EXISTS (SELECT 1 FROM device_tokens WHERE user_id = u.id)`);
+    } else if (hasDevice === 'false') {
+      conds.push(`NOT EXISTS (SELECT 1 FROM device_tokens WHERE user_id = u.id)`);
+    }
+
     const whereSql = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
     // Sıralama — dashboard'dan gelen "Az Rehberli" tıklaması için low_contacts özel
