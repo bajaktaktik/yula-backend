@@ -321,7 +321,9 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       });
     }
     const ids = Array.from(tierMap.keys());
-    const hours = Math.min(parseInt(req.query.hours || '720', 10), 720);
+    // Vitrin zaman penceresi — client istediği kadar geriye bakabilir (max 1 yıl)
+    // Default 720 saat (30 gün). Client 6 ay = 4320, tümü = 8760 (1 yıl) gönderebilir.
+    const hours = Math.min(parseInt(req.query.hours || '720', 10), 8760);
     const myGender = await getMyGender(req.userId);
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
