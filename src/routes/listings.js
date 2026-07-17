@@ -124,6 +124,17 @@ router.get('/', requireAuth, async (req, res, next) => {
     const includeHidden = req.query.includeHidden === '1' || req.query.includeHidden === 'true';
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
     const sellerId = req.query.sellerId ? String(req.query.sellerId) : null;
+    // Sıralama seçenekleri (mobile filter chip)
+    // newest (default) | oldest | price_asc | price_desc | popular
+    const sortBy = String(req.query.sortBy || 'newest');
+    const orderMap = {
+      newest:     'l.created_at DESC',
+      oldest:     'l.created_at ASC',
+      price_asc:  'l.price ASC, l.created_at DESC',
+      price_desc: 'l.price DESC, l.created_at DESC',
+      popular:    'l.view_count DESC, l.created_at DESC',
+    };
+    const orderBySql = orderMap[sortBy] || orderMap.newest;
 
     const filters = [
       'l.user_id = ANY($1::uuid[])',
@@ -226,7 +237,7 @@ router.get('/', requireAuth, async (req, res, next) => {
       LEFT JOIN categories c ON c.id = l.category_id
       LEFT JOIN user_contacts uc ON uc.user_id = $${userParamIdx} AND uc.contact_phone_hash = u.phone_hash
       WHERE ${filters.join(' AND ')}
-      ORDER BY l.created_at DESC
+      ORDER BY ${orderBySql}
       LIMIT $${params.length - 1} OFFSET $${params.length}
     `;
     const { rows } = await pool.query(sql, params);
