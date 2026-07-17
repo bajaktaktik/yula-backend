@@ -10,7 +10,10 @@ const { signAccess, signRefresh, verifyRefresh, verifyAccess } = require('../aut
 const { ensureReviewerSeed } = require('../services/reviewer-seed');
 const { requireAuth } = require('../auth/middleware');
 
-const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
+// Reviewer bypass listesi — sadece Railway env'de REVIEWER_PHONES set edilirse aktifleşir.
+// Default boş → hiçbir numara için PIN bypass'ı yok, herkes normal SMS OTP ile geçer.
+// App Store / Play Store submission dönemi geldiğinde geçici olarak eklersin, sonra kaldırırsın.
+const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 // Admin bilgisi artık users.role kolonundan gelir. DB'ye tek sorgu ile bakılır.

@@ -18,7 +18,9 @@ const MAX_ATTEMPTS = 5;
 // Bu sabit numaralar için SMS gönderilmez ve OTP olarak "REVIEWER_OTP_CODE" sabit kabul edilir.
 // Mağaza submission metadata'da bu numara + kod reviewer'a verilir.
 // PRODUCTION'DA BU NUMARAYI KIMSEYE PAYLASMA.
-const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '+905555555555')
+// Sadece Railway env'de REVIEWER_PHONES set edildiyse bypass aktif olur.
+// Default boş — herkese gerçek SMS gönderilir + gerçek OTP kodu istenir.
+const REVIEWER_PHONES = (process.env.REVIEWER_PHONES || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
