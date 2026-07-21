@@ -287,6 +287,12 @@ router.get('/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM listings WHERE status = 'active')                                             AS listings_active,
         (SELECT COUNT(*)::int FROM listings)                                                                     AS listings_total,
 
+        -- MATLUB İSTEKLERİ
+        (SELECT COUNT(*)::int FROM requests WHERE created_at >= (SELECT ts FROM today))                          AS requests_today,
+        (SELECT COUNT(*)::int FROM requests WHERE created_at >= (SELECT ts FROM yesterday) AND created_at < (SELECT ts FROM today)) AS requests_yesterday,
+        (SELECT COUNT(*)::int FROM requests WHERE status = 'active' AND admin_removed_at IS NULL)                AS requests_active,
+        (SELECT COUNT(*)::int FROM requests)                                                                     AS requests_total,
+
         -- MESAJLAR
         (SELECT COUNT(*)::int FROM messages WHERE sent_at >= (SELECT ts FROM today))                             AS messages_today,
         (SELECT COUNT(*)::int FROM messages WHERE sent_at >= (SELECT ts FROM yesterday) AND sent_at < (SELECT ts FROM today))       AS messages_yesterday,
@@ -869,6 +875,134 @@ router.post('/listings/:id/action', requireAuth, requireAdmin, async (req, res, 
     );
 
     console.log(`[admin] listing_${value.action} id=${listing.id} by=${req.userId}`);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// MATLUB (İSTEK) MODERASYONU
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/requests — filtre + arama + sayfalama
+router.get('/requests', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || 'all');
+    const userId = String(req.query.userId || '').trim();
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
+
+    const conds = [];
+    const params = [];
+
+    if (q) {
+      params.push(q);
+      conds.push(`(r.title ILIKE '%' || $${params.length} || '%' OR r.description ILIKE '%' || $${params.length} || '%')`);
+    }
+    if (status === 'active') conds.push(`r.status = 'active' AND r.admin_removed_at IS NULL`);
+    else if (status === 'fulfilled') conds.push(`r.status = 'fulfilled'`);
+    else if (status === 'removed') conds.push(`r.admin_removed_at IS NOT NULL`);
+    // 'all' → tümü
+
+    if (userId) {
+      params.push(userId);
+      conds.push(`r.user_id = $${params.length}`);
+    }
+    const whereSql = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+
+    params.push(limit);
+    const limitIdx = params.length;
+    params.push(offset);
+    const offsetIdx = params.length;
+
+    const r = await pool.query(
+      `SELECT r.id, r.title, r.description, r.status, r.fulfilled_at,
+              r.created_at, r.view_count,
+              r.admin_removed_at, r.admin_removed_reason,
+              r.restricted_to_gender,
+              r.user_id,
+              u.display_name AS user_name,
+              c.name AS category_name
+       FROM requests r
+       LEFT JOIN users u ON u.id = r.user_id
+       LEFT JOIN categories c ON c.id = r.category_id
+       ${whereSql}
+       ORDER BY r.created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
+    );
+
+    res.json({ requests: r.rows, count: r.rowCount });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /admin/requests/:id — detay
+router.get('/requests/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const rq = await pool.query(
+      `SELECT r.*,
+              u.display_name AS user_name, u.avatar_url AS user_avatar, u.status AS user_status,
+              c.name AS category_name
+       FROM requests r
+       LEFT JOIN users u ON u.id = r.user_id
+       LEFT JOIN categories c ON c.id = r.category_id
+       WHERE r.id = $1`,
+      [req.params.id]
+    );
+    if (rq.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    res.json({ request: rq.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/requests/:id/action — remove | restore | delete
+const reqActionSchema = Joi.object({
+  action: Joi.string().valid('remove', 'restore', 'delete').required(),
+  reason: Joi.string().min(3).max(500).required(),
+});
+
+router.post('/requests/:id/action', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { value, error } = reqActionSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const rq = await pool.query('SELECT id, user_id, title FROM requests WHERE id = $1', [req.params.id]);
+    if (rq.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const request = rq.rows[0];
+
+    let auditAction = value.action;
+    if (value.action === 'remove') {
+      await pool.query(
+        `UPDATE requests SET admin_removed_at = now(), admin_removed_reason = $2 WHERE id = $1`,
+        [req.params.id, value.reason]
+      );
+      auditAction = 'request_remove';
+    } else if (value.action === 'restore') {
+      await pool.query(
+        `UPDATE requests SET admin_removed_at = NULL, admin_removed_reason = NULL WHERE id = $1`,
+        [req.params.id]
+      );
+      auditAction = 'request_restore';
+    } else if (value.action === 'delete') {
+      await pool.query('DELETE FROM requests WHERE id = $1', [req.params.id]);
+      auditAction = 'request_delete';
+    }
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_user_id, target_user_id, action, reason, metadata)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        req.userId, request.user_id, auditAction, value.reason,
+        JSON.stringify({ request_id: request.id, request_title: request.title }),
+      ]
+    );
+
+    console.log(`[admin] request_${value.action} id=${request.id} by=${req.userId}`);
     res.json({ ok: true });
   } catch (err) {
     next(err);

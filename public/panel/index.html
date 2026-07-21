@@ -91,6 +91,9 @@
       <button data-tab="listings" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>📦</span> İlanlar
       </button>
+      <button data-tab="requests" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>💡</span> Matlub İstekleri
+      </button>
       <button data-tab="reports" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>⚠️</span> Şikayetler
         <span id="reports-badge" class="hidden ml-auto bg-red-600 text-xs px-2 py-0.5 rounded-full">0</span>
@@ -303,6 +306,7 @@ function switchTab(tab) {
     dashboard: 'Dashboard',
     users: 'Kullanıcı Yönetimi',
     listings: 'İlan Moderasyonu',
+    requests: 'Matlub İstek Moderasyonu',
     reports: 'Şikayetler',
     banned: 'Yasak Kelimeler',
     system: 'Sistem İzleme',
@@ -312,6 +316,7 @@ function switchTab(tab) {
   if (tab === 'dashboard') renderDashboard();
   if (tab === 'users') renderUsers();
   if (tab === 'listings') renderListings();
+  if (tab === 'requests') renderRequests();
   if (tab === 'reports') renderReports();
   if (tab === 'banned') renderBanned();
   if (tab === 'system') renderSystem();
@@ -403,11 +408,15 @@ async function renderDashboard() {
     c.innerHTML = `
       ${smsHtml}
       <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Bugün</div>
-      <div class="grid grid-cols-4 gap-4 mb-6">
+      <div class="grid grid-cols-4 gap-4 mb-4">
         ${metricCard('👤', 'Kayıt', d.signup_today, { text: 'Dün: ' + d.signup_yesterday + ' · ' + signupD.text, color: signupD.color }, '#16a34a')}
         ${metricCard('📦', 'Yeni İlan', d.listings_today, { text: 'Dün: ' + d.listings_yesterday + ' · ' + listingD.text, color: listingD.color }, '#1F4E79')}
         ${metricCard('💬', 'Mesaj', d.messages_today, { text: 'Dün: ' + d.messages_yesterday + ' · ' + msgD.text, color: msgD.color }, '#7c3aed')}
         ${metricCard('⚠️', 'Bekleyen Şikayet', d.reports_pending, { text: 'Bugün: ' + d.reports_today + ' yeni', color: 'text-slate-500' }, d.reports_pending > 0 ? '#dc2626' : '#94a3b8')}
+      </div>
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        ${metricCard('💡', 'Yeni İstek (Matlub)', d.requests_today || 0, { text: 'Dün: ' + (d.requests_yesterday || 0), color: 'text-slate-500' }, '#ea580c')}
+        ${metricCard('💡', 'Aktif İstek', d.requests_active || 0, { text: 'Toplam: ' + (d.requests_total || 0), color: 'text-slate-500' }, '#fb923c')}
       </div>
 
       <div class="mb-2 text-xs font-bold text-slate-500 uppercase tracking-wider">Aktif Kullanıcı</div>
@@ -1749,6 +1758,225 @@ async function listingAction(listingId, action, reason) {
     loadListings();
   } catch (err) {
     alert('Hata: ' + err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Matlub İstekler (moderasyon)
+// ═══════════════════════════════════════════════════════════════
+
+let requestsState = { q: '', status: 'all' };
+
+const REQUEST_STATUS_FILTERS = [
+  { key: 'all', label: 'Tümü' },
+  { key: 'active', label: '🔵 Aktif' },
+  { key: 'fulfilled', label: '✓ Karşılandı' },
+  { key: 'removed', label: '🗑️ Kaldırılmış' },
+];
+
+function renderRequests() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="mb-3 flex flex-wrap gap-3 items-center">
+      <input id="req-search" placeholder="Başlık veya açıklama..."
+        value="${requestsState.q.replace(/"/g, '&quot;')}"
+        class="flex-1 min-w-[240px] px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#ea580c]" />
+    </div>
+    <div class="mb-4 flex gap-1 flex-wrap">
+      ${REQUEST_STATUS_FILTERS.map(f => `
+        <button data-req-status="${f.key}" class="req-stat-chip px-3 py-2 text-sm rounded-lg border ${requestsState.status === f.key ? 'bg-[#ea580c] text-white border-[#ea580c]' : 'bg-white border-slate-300'}">
+          ${f.label}
+        </button>`).join('')}
+    </div>
+    <div id="requests-list" class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div class="p-16 flex justify-center"><div class="spinner"></div></div>
+    </div>
+  `;
+  let debounceT;
+  document.getElementById('req-search').addEventListener('input', (e) => {
+    clearTimeout(debounceT);
+    debounceT = setTimeout(() => { requestsState.q = e.target.value.trim(); loadRequests(); }, 300);
+  });
+  document.querySelectorAll('.req-stat-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      requestsState.status = b.dataset.reqStatus;
+      renderRequests();
+    });
+  });
+  loadRequests();
+}
+
+async function loadRequests() {
+  const list = document.getElementById('requests-list');
+  try {
+    const params = new URLSearchParams({ limit: '80' });
+    if (requestsState.q) params.set('q', requestsState.q);
+    if (requestsState.status !== 'all') params.set('status', requestsState.status);
+    const data = await apiJson('/admin/requests?' + params.toString());
+    const rows = data?.requests || [];
+    if (rows.length === 0) {
+      list.innerHTML = '<div class="p-12 text-center text-slate-400">Sonuç yok</div>';
+      return;
+    }
+    list.innerHTML = rows.map(r => requestRow(r)).join('');
+    list.querySelectorAll('[data-req-id]').forEach(el => {
+      el.addEventListener('click', () => openRequestDetail(el.dataset.reqId));
+    });
+  } catch (err) {
+    list.innerHTML = '<div class="p-6 text-red-600">Hata: ' + err.message + '</div>';
+  }
+}
+
+function requestRow(r) {
+  const isRemoved = !!r.admin_removed_at;
+  const isFulfilled = r.status === 'fulfilled';
+  const genderIcon = r.restricted_to_gender === 'female' ? '♀' : r.restricted_to_gender === 'male' ? '♂' : '';
+
+  return `
+    <div data-req-id="${r.id}" class="flex items-start gap-3 px-4 py-3 border-b border-slate-100 hover:bg-orange-50 cursor-pointer ${isRemoved ? 'bg-red-50/50' : ''}">
+      <div class="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center flex-shrink-0">
+        <span class="text-lg">💡</span>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="font-semibold truncate">${r.title}</div>
+          ${isRemoved ? '<span class="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full font-bold">🗑️ KALDIRILDI</span>' : ''}
+          ${isFulfilled && !isRemoved ? '<span class="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-bold">✓ KARŞILANDI</span>' : ''}
+          ${genderIcon ? '<span class="text-xs text-purple-700 font-bold">' + genderIcon + '</span>' : ''}
+        </div>
+        <div class="text-sm text-slate-600 mt-1 line-clamp-2">${r.description || ''}</div>
+        <div class="text-xs text-slate-500 flex items-center gap-3 mt-1 flex-wrap">
+          <span>👤 ${r.user_name || '(isimsiz)'}</span>
+          ${r.category_name ? '<span>📁 ' + r.category_name + '</span>' : ''}
+          <span>👁️ ${r.view_count || 0}</span>
+          <span class="ml-auto italic">${new Date(r.created_at).toLocaleDateString('tr-TR')}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function openRequestDetail(id) {
+  openModal('<div class="p-16 flex justify-center"><div class="spinner"></div></div>');
+  try {
+    const data = await apiJson('/admin/requests/' + id);
+    renderRequestDetailModal(data.request);
+  } catch (err) {
+    openModal('<div class="p-6 text-red-600">Hata: ' + err.message + '</div>');
+  }
+}
+
+function renderRequestDetailModal(r) {
+  const isRemoved = !!r.admin_removed_at;
+  const isFulfilled = r.status === 'fulfilled';
+  const genderLabel = r.restricted_to_gender === 'female' ? 'Sadece kadınlar' : r.restricted_to_gender === 'male' ? 'Sadece erkekler' : 'Herkes';
+
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-start justify-between">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <span class="text-2xl">💡</span>
+          <div class="text-lg font-bold">${r.title}</div>
+          ${isRemoved ? '<span class="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full font-bold">🗑️ Kaldırıldı</span>' : ''}
+          ${isFulfilled && !isRemoved ? '<span class="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full font-bold">✓ Karşılandı</span>' : ''}
+        </div>
+        ${isRemoved ? '<div class="text-xs text-red-700 mt-1">Kaldırma sebebi: <b>' + (r.admin_removed_reason || '-') + '</b></div>' : ''}
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+
+    <div class="p-6 border-b border-slate-200">
+      <div class="text-xs font-bold text-slate-500 uppercase mb-2">Aradığı</div>
+      <div class="text-sm whitespace-pre-wrap text-slate-800">${r.description || '(açıklama yok)'}</div>
+    </div>
+
+    <div class="p-6 border-b border-slate-200 grid grid-cols-2 gap-3 text-sm">
+      <div><span class="text-slate-500">Kategori:</span> <b>${r.category_name || '—'}</b></div>
+      <div><span class="text-slate-500">Kimler görsün:</span> <b>${genderLabel}</b></div>
+      <div><span class="text-slate-500">Görüntülenme:</span> <b>${r.view_count || 0}</b></div>
+      <div><span class="text-slate-500">Oluşturma:</span> <b>${new Date(r.created_at).toLocaleString('tr-TR')}</b></div>
+      ${r.fulfilled_at ? '<div class="col-span-2"><span class="text-slate-500">Karşılandı:</span> <b>' + new Date(r.fulfilled_at).toLocaleString('tr-TR') + '</b></div>' : ''}
+      <div class="col-span-2 flex items-center gap-2">
+        <span class="text-slate-500">İsteği veren:</span>
+        <button onclick="closeModal(); openUserDetail('${r.user_id}')" class="text-[#1F4E79] font-semibold hover:underline">
+          ${r.user_name || '(isimsiz)'}
+        </button>
+        ${r.user_status !== 'active' ? '<span class="text-xs text-red-600 font-semibold">(' + r.user_status + ')</span>' : ''}
+      </div>
+    </div>
+
+    <div class="p-6 flex flex-wrap gap-2">
+      ${!isRemoved ? `
+        <button onclick="openRequestActionDialog('${r.id}', 'remove', '${(r.title || '').replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-yellow-100 text-yellow-800 font-semibold hover:bg-yellow-200">
+          🗑️ Kaldır (Soft)
+        </button>` : `
+        <button onclick="openRequestActionDialog('${r.id}', 'restore', '${(r.title || '').replace(/'/g, "\\'")}')"
+          class="px-4 py-2 rounded-lg bg-green-100 text-green-800 font-semibold hover:bg-green-200">
+          ↩️ Kaldırmayı Geri Al
+        </button>`}
+      <button onclick="openRequestActionDialog('${r.id}', 'delete', '${(r.title || '').replace(/'/g, "\\'")}')"
+        class="px-4 py-2 rounded-lg bg-red-100 text-red-800 font-semibold hover:bg-red-200">
+        ❌ Kalıcı Sil (KVKK)
+      </button>
+    </div>
+  `;
+  document.getElementById('modal-content').innerHTML = html;
+}
+
+const REQUEST_ACTION_LABELS = {
+  remove: { title: 'İsteği Kaldır', desc: 'İstek görünmez olacak, kullanıcı düzenleyemez. Sonradan geri alınabilir.', color: 'bg-yellow-600 hover:bg-yellow-700' },
+  restore: { title: 'Kaldırmayı Geri Al', desc: 'İstek tekrar aktif olur.', color: 'bg-green-600 hover:bg-green-700' },
+  delete: { title: 'Kalıcı Sil', desc: 'İstek KALICI OLARAK silinir. Geri alınamaz.', color: 'bg-red-600 hover:bg-red-700' },
+};
+
+function openRequestActionDialog(id, action, title) {
+  const cfg = REQUEST_ACTION_LABELS[action];
+  const html = `
+    <div class="p-6 border-b border-slate-200 flex items-center justify-between">
+      <div>
+        <div class="text-lg font-bold">${cfg.title}</div>
+        <div class="text-xs text-slate-500 mt-1 truncate max-w-md">${title}</div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">×</button>
+    </div>
+    <div class="p-6 space-y-3">
+      <div class="text-sm text-slate-600">${cfg.desc}</div>
+      <div>
+        <label class="block text-sm font-semibold text-slate-700 mb-1">Gerekçe <span class="text-red-600">*</span></label>
+        <textarea id="req-reason" rows="3" minlength="3" maxlength="500"
+          placeholder="Neden bu aksiyon? (Audit log'da kalır)"
+          class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:border-[#ea580c] resize-none"></textarea>
+      </div>
+      <div id="req-error" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></div>
+    </div>
+    <div class="p-6 border-t border-slate-200 flex gap-2">
+      <button onclick="closeModal()" class="flex-1 px-4 py-3 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Vazgeç</button>
+      <button onclick="submitRequestAction('${id}', '${action}')" class="flex-1 px-4 py-3 rounded-lg ${cfg.color} text-white font-semibold">Uygula</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function submitRequestAction(id, action) {
+  const reason = document.getElementById('req-reason').value.trim();
+  const err = document.getElementById('req-error');
+  err.classList.add('hidden');
+  if (reason.length < 3) {
+    err.textContent = 'Gerekçe en az 3 karakter olmalı.';
+    err.classList.remove('hidden');
+    return;
+  }
+  try {
+    await apiJson('/admin/requests/' + id + '/action', {
+      method: 'POST',
+      body: JSON.stringify({ action, reason }),
+    });
+    closeModal();
+    loadRequests();
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.remove('hidden');
   }
 }
 
