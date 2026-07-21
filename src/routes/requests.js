@@ -188,6 +188,26 @@ router.post('/', requireAuth, async (req, res, next) => {
 });
 
 // ─────────────────────────────────────────
+// GET /requests/mine/list — kullanıcının kendi istekleri
+// (NOT: /:id'den ÖNCE tanımlı olmalı, aksi halde /:id yakalar!)
+// ─────────────────────────────────────────
+router.get('/mine/list', requireAuth, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT r.*, c.name AS category_name
+       FROM requests r
+       LEFT JOIN categories c ON c.id = r.category_id
+       WHERE r.user_id = $1
+       ORDER BY r.created_at DESC`,
+      [req.userId]
+    );
+    res.json({ requests: r.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─────────────────────────────────────────
 // GET /requests/:id — detay
 // ─────────────────────────────────────────
 router.get('/:id', requireAuth, async (req, res, next) => {
@@ -351,25 +371,6 @@ router.delete('/:id/hide', requireAuth, async (req, res, next) => {
       [req.userId, req.params.id]
     );
     res.json({ ok: true });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ─────────────────────────────────────────
-// GET /requests/mine/list — kullanıcının kendi istekleri
-// ─────────────────────────────────────────
-router.get('/mine/list', requireAuth, async (req, res, next) => {
-  try {
-    const r = await pool.query(
-      `SELECT r.*, c.name AS category_name
-       FROM requests r
-       LEFT JOIN categories c ON c.id = r.category_id
-       WHERE r.user_id = $1
-       ORDER BY r.created_at DESC`,
-      [req.userId]
-    );
-    res.json({ requests: r.rows });
   } catch (err) {
     next(err);
   }
