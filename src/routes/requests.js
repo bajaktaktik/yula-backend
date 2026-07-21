@@ -210,7 +210,37 @@ router.post('/', requireAuth, async (req, res, next) => {
       throw dbErr;
     }
 
-    res.status(201).json({ request: r.rows[0] });
+    const newRequest = r.rows[0];
+
+    // Admin bildirimi — yeni istek (arka planda, ilan cevabını geciktirmez)
+    // Kendi isteği ise admin'e kendine push atmayı önle (excludeUserId)
+    (async () => {
+      try {
+        const { sendToAllAdmins } = require('../services/push');
+        const uRes = await pool.query(
+          `SELECT REGEXP_REPLACE(COALESCE(display_name, ''), '^\\[DEMO\\] ', '') AS name
+           FROM users WHERE id = $1`,
+          [req.userId]
+        );
+        const senderName = uRes.rows[0]?.name || 'Bir kullanıcı';
+        await sendToAllAdmins(
+          {
+            title: '💡 Yeni Matlub',
+            body: `${senderName}: ${newRequest.title}`,
+            data: {
+              type: 'admin_new_request',
+              request_id: newRequest.id,
+              user_id: req.userId,
+            },
+          },
+          req.userId // kendi isteği ise kendine push atma
+        );
+      } catch (e) {
+        console.error('[requests] admin notify fail:', e.message);
+      }
+    })();
+
+    res.status(201).json({ request: newRequest });
   } catch (err) {
     next(err);
   }
