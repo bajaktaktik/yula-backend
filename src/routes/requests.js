@@ -154,6 +154,19 @@ router.post('/', requireAuth, async (req, res, next) => {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
+    // Idempotency-Key — timeout/retry durumunda duplicate önle
+    const idempotencyKey = (req.headers['idempotency-key'] || '').toString().slice(0, 128) || null;
+    if (idempotencyKey) {
+      const existing = await pool.query(
+        `SELECT * FROM requests WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1`,
+        [req.userId, idempotencyKey]
+      );
+      if (existing.rows.length > 0) {
+        // Aynı key ile zaten oluşturulmuş — mevcut kaydı dön (idempotent)
+        return res.status(201).json({ request: existing.rows[0], idempotent: true });
+      }
+    }
+
     // Yasak kelime kontrolü
     const bannedWords = require('../services/banned-words');
     const combined = (value.title || '') + '\n' + (value.description || '');
@@ -175,11 +188,27 @@ router.post('/', requireAuth, async (req, res, next) => {
       }
     }
 
-    const r = await pool.query(
-      `INSERT INTO requests (user_id, title, description, category_id, restricted_to_gender)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [req.userId, value.title, value.description, value.categoryId || null, restrictedTo]
-    );
+    // INSERT — race durumunda (aynı key ile eş zamanlı istek) unique index yakalar
+    let r;
+    try {
+      r = await pool.query(
+        `INSERT INTO requests (user_id, title, description, category_id, restricted_to_gender, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [req.userId, value.title, value.description, value.categoryId || null, restrictedTo, idempotencyKey]
+      );
+    } catch (dbErr) {
+      // 23505 = unique_violation — aynı key ile paralel istek geldi, mevcut kaydı dön
+      if (dbErr.code === '23505' && idempotencyKey) {
+        const existing = await pool.query(
+          `SELECT * FROM requests WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1`,
+          [req.userId, idempotencyKey]
+        );
+        if (existing.rows.length > 0) {
+          return res.status(201).json({ request: existing.rows[0], idempotent: true });
+        }
+      }
+      throw dbErr;
+    }
 
     res.status(201).json({ request: r.rows[0] });
   } catch (err) {

@@ -557,6 +557,18 @@ router.post('/', requireAuth, async (req, res, next) => {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
+    // Idempotency-Key — timeout/retry durumunda duplicate önle
+    const idempotencyKey = (req.headers['idempotency-key'] || '').toString().slice(0, 128) || null;
+    if (idempotencyKey) {
+      const existing = await pool.query(
+        `SELECT * FROM listings WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1`,
+        [req.userId, idempotencyKey]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(201).json({ listing: existing.rows[0], idempotent: true });
+      }
+    }
+
     // Yasak kelime kontrolü — title + description birlikte taranır
     const bannedWords = require('../services/banned-words');
     const combinedText = (value.title || '') + '\n' + (value.description || '');
@@ -579,11 +591,27 @@ router.post('/', requireAuth, async (req, res, next) => {
       }
       // Aksi takdirde sessizce yok say (kullanıcı kendi cinsiyetinin dışındaki bir kısıtı koyamaz)
     }
-    const ins = await client.query(
-      `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable]
-    );
+    let ins;
+    try {
+      ins = await client.query(
+        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey]
+      );
+    } catch (dbErr) {
+      // 23505 = unique_violation — race condition: aynı key paralel geldi
+      if (dbErr.code === '23505' && idempotencyKey) {
+        await client.query('ROLLBACK').catch(() => {});
+        const existing = await pool.query(
+          `SELECT * FROM listings WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1`,
+          [req.userId, idempotencyKey]
+        );
+        if (existing.rows.length > 0) {
+          return res.status(201).json({ listing: existing.rows[0], idempotent: true });
+        }
+      }
+      throw dbErr;
+    }
     const listing = ins.rows[0];
     const thumbs = Array.isArray(req.body.photoThumbs) ? req.body.photoThumbs : [];
     for (let i = 0; i < value.photoUrls.length; i++) {

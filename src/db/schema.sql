@@ -136,6 +136,11 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_at TIMESTAMPTZ;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
 -- Admin öne çıkarma — bu tarih geçince otomatik normal ilan
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
+-- Idempotency — timeout/retry durumunda duplicate ilan önle
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_idem_user
+  ON listings(user_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 -- İlan detay görüntülenme sayacı (UNIQUE kişi sayısı — aynı kullanıcı defalarca açsa 1 kez sayılır)
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS view_count INT NOT NULL DEFAULT 0;
 
@@ -290,6 +295,11 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE INDEX IF NOT EXISTS idx_requests_user ON requests(user_id);
 CREATE INDEX IF NOT EXISTS idx_requests_status_created ON requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_category ON requests(category_id);
+-- Idempotency — timeout/retry durumunda duplicate önle
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_idem_user
+  ON requests(user_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 
 -- İstek gizleme
 CREATE TABLE IF NOT EXISTS hidden_requests (
