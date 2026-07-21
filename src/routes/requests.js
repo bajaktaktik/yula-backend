@@ -35,6 +35,7 @@ router.get('/', requireAuth, async (req, res, next) => {
     const days = req.query.days ? Math.max(1, Math.min(parseInt(req.query.days, 10), 365)) : null;
     const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10), 1), 200);
     const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
+    const categoryId = req.query.categoryId ? parseInt(req.query.categoryId, 10) : null;
 
     // 1. derece + opsiyonel 2. derece
     const visible = await graph.getVisibleUserIds(req.userId);
@@ -77,6 +78,19 @@ router.get('/', requireAuth, async (req, res, next) => {
     if (days) filters.push(`r.created_at >= now() - interval '${days} days'`);
     if (!includeHidden) {
       filters.push(`r.id NOT IN (SELECT request_id FROM hidden_requests WHERE user_id = '${req.userId}')`);
+    }
+    // Kategori filtresi — parent seçilirse tüm alt kategoriler dahil (recursive CTE)
+    if (categoryId) {
+      params.push(categoryId);
+      filters.push(`r.category_id IN (
+        WITH RECURSIVE descendants AS (
+          SELECT id FROM categories WHERE id = $${params.length}
+          UNION ALL
+          SELECT c.id FROM categories c
+          INNER JOIN descendants d ON c.parent_id = d.id
+        )
+        SELECT id FROM descendants
+      )`);
     }
 
     params.push(limit, offset);
