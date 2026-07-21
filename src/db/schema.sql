@@ -139,6 +139,20 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
 -- İlan detay görüntülenme sayacı (UNIQUE kişi sayısı — aynı kullanıcı defalarca açsa 1 kez sayılır)
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS view_count INT NOT NULL DEFAULT 0;
 
+-- Satıldı işaretlenme zamanı — sold ilanın feed'de kaç gün gözükeceğini belirler
+-- Kural: sold_at + 7 gün geçtiyse artık kimseye gösterilmez
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS sold_at TIMESTAMPTZ;
+
+-- Sold ilan bireysel gösterim kaydı
+-- Bir kullanıcı sold bir ilanı ilk kez feed'de gördüğünde INSERT edilir
+-- 24 saat sonra o kullanıcı için feed'de gizlenir
+CREATE TABLE IF NOT EXISTS sold_listing_seen (
+  listing_id     UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (listing_id, user_id)
+);
+
 -- Unique görüntüleme kaydı — hangi user hangi ilanı gördü
 -- INSERT ON CONFLICT DO NOTHING ile aynı user tekrar açsa yeni row eklenmez
 -- Uygulama katmanı, sadece ilk INSERT'te listings.view_count'u artırır

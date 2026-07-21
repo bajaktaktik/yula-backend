@@ -138,7 +138,22 @@ router.get('/', requireAuth, async (req, res, next) => {
 
     const filters = [
       'l.user_id = ANY($1::uuid[])',
-      "l.status = 'active'",
+      // Aktif ilanlar HER ZAMAN gösterilir.
+      // Sold ilanlar özel koşulla: max 7 gün, ve bu kullanıcı için 24 saatte tek gösterim.
+      `(
+        l.status = 'active'
+        OR (
+          l.status = 'sold'
+          AND l.sold_at IS NOT NULL
+          AND l.sold_at > now() - interval '7 days'
+          AND NOT EXISTS (
+            SELECT 1 FROM sold_listing_seen ss
+            WHERE ss.listing_id = l.id
+              AND ss.user_id = '${req.userId}'
+              AND ss.first_seen_at < now() - interval '24 hours'
+          )
+        )
+      )`,
       'l.admin_removed_at IS NULL',
       // Cinsiyet kısıtı — kullanıcı kendi cinsiyetine uyan ilanları görür
       genderFilter(myGender),
@@ -220,7 +235,7 @@ router.get('/', requireAuth, async (req, res, next) => {
       SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
              l.location_city, l.location_district, l.created_at,
              l.category_id, c.name AS category_name, c.slug AS category_slug,
-             l.user_id,
+             l.user_id, l.status, l.sold_at,
              -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
@@ -263,6 +278,18 @@ router.get('/', requireAuth, async (req, res, next) => {
         photo_count: row.photo_count || 0,
       };
     });
+
+    // Sold ilan tracking — bu feed'de görülen sold ilanları kaydet
+    // İkinci gösterime kadar 24 saat sayacı başlar. Sadece bu kullanıcı için.
+    const soldIdsInFeed = result.filter((r) => r.status === 'sold').map((r) => r.id);
+    if (soldIdsInFeed.length > 0) {
+      pool.query(
+        `INSERT INTO sold_listing_seen (listing_id, user_id)
+         SELECT unnest($1::uuid[]), $2
+         ON CONFLICT DO NOTHING`,
+        [soldIdsInFeed, req.userId]
+      ).catch((e) => console.error('[listings] sold_seen track fail:', e.message));
+    }
 
     // Sayaçlar: 1. ve 2. derece ayrı (deduplication zaten SQL'de)
     const firstCount = result.filter((r) => r.tier === 1).length;
@@ -652,6 +679,13 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
         params.push(req.body[camel]);
         updates.push(`${f} = $${params.length}`);
       }
+    }
+    // Status='sold' set edildiğinde sold_at otomatik damgala (ilk kez)
+    // Status başka bir değere döner (geri al) → sold_at NULL
+    if (req.body.status === 'sold') {
+      updates.push(`sold_at = COALESCE(sold_at, now())`);
+    } else if (req.body.status === 'active') {
+      updates.push(`sold_at = NULL`);
     }
     // Ekstra: categoryId, isNegotiable, restrictedToGender
     if (req.body.categoryId !== undefined) {
