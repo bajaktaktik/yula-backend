@@ -26,14 +26,16 @@ router.get('/', requireAuth, async (req, res, next) => {
 
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
 
-    // Kategori başına direkt ilan sayısı
+    // Kategori başına direkt ilan sayısı — listings + requests (Matlub istekleri)
+    // Requests fiyatsız olduğu için free mode'da sayılmaz (kullanıcı zaten "ücretsiz ürün arıyorum" mantıksız)
     const directCount = new Map();
     if (visibleIds.length > 0) {
+      // Listings
       const { rows: countRows } = await pool.query(
         `SELECT l.category_id, COUNT(*)::int AS count
          FROM listings l
          WHERE l.user_id = ANY($1::uuid[])
-           AND l.user_id <> $2  -- kendi ilanlarını sayma
+           AND l.user_id <> $2
            AND l.status = 'active'
            AND ${genderCond}
            AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $2)
@@ -43,6 +45,30 @@ router.get('/', requireAuth, async (req, res, next) => {
         [visibleIds, req.userId]
       );
       countRows.forEach((r) => directCount.set(r.category_id, r.count));
+
+      // Requests (Matlub) — free mode değilse ekle
+      if (!freeOnly) {
+        const reqGenderCond = (myGender === 'female' || myGender === 'male')
+          ? `(r.restricted_to_gender IS NULL OR r.restricted_to_gender = '${myGender}')`
+          : `(r.restricted_to_gender IS NULL)`;
+        const { rows: reqCountRows } = await pool.query(
+          `SELECT r.category_id, COUNT(*)::int AS count
+           FROM requests r
+           WHERE r.user_id = ANY($1::uuid[])
+             AND r.user_id <> $2
+             AND r.status = 'active'
+             AND r.admin_removed_at IS NULL
+             AND ${reqGenderCond}
+             AND r.id NOT IN (SELECT request_id FROM hidden_requests WHERE user_id = $2)
+             AND r.category_id IS NOT NULL
+           GROUP BY r.category_id`,
+          [visibleIds, req.userId]
+        );
+        reqCountRows.forEach((r) => {
+          const prev = directCount.get(r.category_id) || 0;
+          directCount.set(r.category_id, prev + r.count);
+        });
+      }
     }
 
     const { rows } = await pool.query(

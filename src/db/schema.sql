@@ -269,6 +269,44 @@ CREATE TABLE IF NOT EXISTS hidden_listings (
   PRIMARY KEY (user_id, listing_id)
 );
 
+-- Matlub (istekler) — kullanıcıların aradıkları ürünler
+-- Fiyat yok, foto yok, sadece başlık + açıklama + kategori + opsiyonel cinsiyet kısıtı
+-- Fulfilled (karşılandı) durumu sold_listing gibi çalışır — 24h user / 7d global
+CREATE TABLE IF NOT EXISTS requests (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title                 TEXT NOT NULL,
+  description           TEXT NOT NULL,
+  category_id           INT REFERENCES categories(id),
+  restricted_to_gender  TEXT,  -- 'female' | 'male' | NULL (herkese açık)
+  status                TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'fulfilled' | 'expired'
+  fulfilled_at          TIMESTAMPTZ,
+  admin_removed_at      TIMESTAMPTZ,
+  admin_removed_reason  TEXT,
+  view_count            INT NOT NULL DEFAULT 0,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_requests_user ON requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_requests_status_created ON requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_requests_category ON requests(category_id);
+
+-- İstek gizleme
+CREATE TABLE IF NOT EXISTS hidden_requests (
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  request_id UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, request_id)
+);
+
+-- Karşılandı istek bireysel gösterim tracking (sold_listing_seen gibi)
+CREATE TABLE IF NOT EXISTS fulfilled_request_seen (
+  request_id     UUID NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (request_id, user_id)
+);
+
 -- Sikayetler
 CREATE TABLE IF NOT EXISTS reports (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
