@@ -789,8 +789,8 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
 
 router.delete('/:id', requireAuth, async (req, res, next) => {
   try {
-    // Önce foto URL'lerini topla — DB silmesinden sonra listing_photos cascade ile temizlenir,
-    // R2'deki dosyaları da silmek için URL'leri önden almak gerek.
+    // Önce foto URL'lerini topla — DELETE'ten sonra listing_photos cascade ile temizlenir,
+    // R2 dosyalarını silmek için URL'leri önden almak gerek.
     const photoRes = await pool.query(
       `SELECT lp.url, lp.thumb_url
        FROM listing_photos lp
@@ -809,20 +809,8 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
     );
     if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
 
-    // R2'den fotoları temizle — arka planda, response'u geciktirme
-    (async () => {
-      try {
-        const storage = require('../services/storage');
-        for (const url of photoUrls) {
-          await storage.deletePhoto(url);
-        }
-        if (photoUrls.length > 0) {
-          console.log(`[listings] R2 cleanup: ${photoUrls.length} foto silindi (listing ${req.params.id})`);
-        }
-      } catch (e) {
-        console.warn('[listings] R2 cleanup fail:', e.message);
-      }
-    })();
+    // R2 cleanup — arka planda
+    require('../services/storage').cleanupPhotoUrls(photoUrls, `user delete listing ${req.params.id}`);
 
     res.status(204).end();
   } catch (err) {

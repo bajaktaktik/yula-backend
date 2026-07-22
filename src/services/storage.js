@@ -110,9 +110,37 @@ function parseDataUrl(dataUrl) {
   return { buffer, contentType };
 }
 
+/**
+ * URL listesini R2'den arka planda topluca temizle. Fire-and-forget.
+ * DB DELETE'ten ÖNCE URL'leri toplayıp bu fonksiyona vermek gerekir
+ * (listing_photos cascade ile silinirse URL'ler kaybolur).
+ *
+ * Kullanım:
+ *   const { rows } = await pool.query('SELECT url, thumb_url FROM listing_photos WHERE listing_id = $1', [id]);
+ *   const urls = rows.flatMap(r => [r.url, r.thumb_url]).filter(Boolean);
+ *   await pool.query('DELETE FROM listings WHERE id = $1', [id]);
+ *   storage.cleanupPhotoUrls(urls, `listing ${id}`);
+ */
+function cleanupPhotoUrls(urls, contextLabel = '') {
+  if (!Array.isArray(urls) || urls.length === 0) return;
+  (async () => {
+    let ok = 0;
+    for (const url of urls) {
+      try {
+        await deletePhoto(url);
+        ok++;
+      } catch (e) {
+        console.warn('[storage] cleanup fail for', url, e.message);
+      }
+    }
+    console.log(`[storage] R2 cleanup: ${ok}/${urls.length} foto silindi${contextLabel ? ' (' + contextLabel + ')' : ''}`);
+  })();
+}
+
 module.exports = {
   isReady,
   uploadPhoto,
   deletePhoto,
   parseDataUrl,
+  cleanupPhotoUrls,
 };

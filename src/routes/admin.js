@@ -144,7 +144,17 @@ router.post('/reports/:id/action', requireAuth, requireAdmin, async (req, res, n
 
     if (value.action === 'delete_content') {
       if (report.target_type === 'listing') {
+        // R2 foto URL'lerini önden topla (cascade öncesi)
+        const photoRes = await pool.query(
+          'SELECT url, thumb_url FROM listing_photos WHERE listing_id = $1',
+          [report.target_id]
+        );
+        const photoUrls = photoRes.rows
+          .flatMap((r) => [r.url, r.thumb_url])
+          .filter((u) => typeof u === 'string' && u.length > 0);
+
         await pool.query('DELETE FROM listings WHERE id = $1', [report.target_id]);
+        require('../services/storage').cleanupPhotoUrls(photoUrls, `report delete listing ${report.target_id}`);
         summary = 'İlan silindi';
       } else if (report.target_type === 'message') {
         await pool.query('DELETE FROM messages WHERE id = $1', [report.target_id]);
@@ -853,7 +863,20 @@ router.post('/listings/:id/action', requireAuth, requireAdmin, async (req, res, 
       auditAction = 'listing_unfeature';
     } else if (value.action === 'delete') {
       // KVKK / kalıcı silme — foto, konuşma vs. cascade
+      // Önce R2 foto URL'lerini topla (cascade ile silinmeden önce)
+      const photoRes = await pool.query(
+        'SELECT url, thumb_url FROM listing_photos WHERE listing_id = $1',
+        [req.params.id]
+      );
+      const photoUrls = photoRes.rows
+        .flatMap((r) => [r.url, r.thumb_url])
+        .filter((u) => typeof u === 'string' && u.length > 0);
+
       await pool.query('DELETE FROM listings WHERE id = $1', [req.params.id]);
+
+      // R2 cleanup — arka planda
+      require('../services/storage').cleanupPhotoUrls(photoUrls, `admin delete listing ${req.params.id}`);
+
       auditAction = 'listing_delete';
     }
 
