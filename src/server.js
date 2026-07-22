@@ -53,6 +53,45 @@ app.use(rateLimit({ windowMs: 60 * 1000, max: 100 }));
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+// Public /stats — website hero'da gösterilen istatistikler.
+// Auth gerektirmez, 5 dakika in-memory cache ile Railway'de DB yükü minimal.
+// Metrikler: kayıtlı kullanıcı, potansiyel erişim (rehberlerdeki henüz kayıtsız kişiler), toplam ilan.
+const pool = require('./db/pool');
+let publicStatsCache = { data: null, ts: 0 };
+const PUBLIC_STATS_TTL = 5 * 60 * 1000; // 5 dakika
+
+app.get('/public/stats', async (req, res) => {
+  try {
+    // Cache hit
+    if (publicStatsCache.data && Date.now() - publicStatsCache.ts < PUBLIC_STATS_TTL) {
+      return res.json(publicStatsCache.data);
+    }
+    const r = await pool.query(`
+      SELECT
+        -- Kayıtlı aktif kullanıcı
+        (SELECT COUNT(*)::int FROM users WHERE status = 'active') AS users,
+        -- Potansiyel erişim: rehberlerde bulunan ama henüz kayıtsız unique kişi sayısı
+        -- user_contacts.contact_phone_hash → unique count, users.phone_hash'e denk olanlar hariç
+        (SELECT COUNT(DISTINCT uc.contact_phone_hash)::int
+         FROM user_contacts uc
+         WHERE NOT EXISTS (
+           SELECT 1 FROM users u WHERE u.phone_hash = uc.contact_phone_hash AND u.status = 'active'
+         )) AS potential,
+        -- Toplam aktif ilan
+        (SELECT COUNT(*)::int FROM listings WHERE status = 'active') AS listings
+    `);
+    publicStatsCache = { data: r.rows[0], ts: Date.now() };
+    // 5 dk client-side cache
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('[public/stats] fail:', err.message);
+    // Hata durumunda son cache dön (varsa) — website hero'da hiç sayı olmasın diye
+    if (publicStatsCache.data) return res.json(publicStatsCache.data);
+    res.status(503).json({ error: 'stats_unavailable' });
+  }
+});
+
 // Web Admin Paneli (macOS/tarayıcı için) — backend/public/panel/index.html
 // GİZLİ URL: ADMIN_PANEL_PATH env değişkeni ile ayarlanır (Railway env).
 // Env boşsa varsayılan /panel — ama prod'da MUTLAKA random string ile değiştir.
