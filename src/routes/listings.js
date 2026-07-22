@@ -7,7 +7,8 @@ const graph = require('../services/graph');
 const router = express.Router();
 
 const createSchema = Joi.object({
-  title: Joi.string().min(3).max(120).required(),
+  // Min 2: "TV", "PC", "Ev" gibi kısa isimler yaygın. Matlub ile de tutarlı.
+  title: Joi.string().min(2).max(120).required(),
   // Açıklama min kısıtı yok — kısa veya boş bile olabilir
   description: Joi.string().max(4000).allow('').default(''),
   categoryId: Joi.number().integer().required(),
