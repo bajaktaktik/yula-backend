@@ -789,11 +789,41 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
 
 router.delete('/:id', requireAuth, async (req, res, next) => {
   try {
+    // Önce foto URL'lerini topla — DB silmesinden sonra listing_photos cascade ile temizlenir,
+    // R2'deki dosyaları da silmek için URL'leri önden almak gerek.
+    const photoRes = await pool.query(
+      `SELECT lp.url, lp.thumb_url
+       FROM listing_photos lp
+       INNER JOIN listings l ON l.id = lp.listing_id
+       WHERE l.id = $1 AND l.user_id = $2`,
+      [req.params.id, req.userId]
+    );
+    const photoUrls = photoRes.rows
+      .flatMap((r) => [r.url, r.thumb_url])
+      .filter((u) => typeof u === 'string' && u.length > 0);
+
+    // DB'den sil (listing_photos ON DELETE CASCADE ile birlikte)
     const r = await pool.query(
       'DELETE FROM listings WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: 'not_found' });
+
+    // R2'den fotoları temizle — arka planda, response'u geciktirme
+    (async () => {
+      try {
+        const storage = require('../services/storage');
+        for (const url of photoUrls) {
+          await storage.deletePhoto(url);
+        }
+        if (photoUrls.length > 0) {
+          console.log(`[listings] R2 cleanup: ${photoUrls.length} foto silindi (listing ${req.params.id})`);
+        }
+      } catch (e) {
+        console.warn('[listings] R2 cleanup fail:', e.message);
+      }
+    })();
+
     res.status(204).end();
   } catch (err) {
     next(err);
