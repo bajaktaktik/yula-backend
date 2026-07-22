@@ -27,7 +27,14 @@ module.exports = {
   },
   s3: {
     endpoint: process.env.S3_ENDPOINT,
-    region: process.env.S3_REGION || 'auto', // Cloudflare R2: "auto"
+    // Cloudflare R2 sadece şu region değerlerini kabul eder:
+    // auto | wnam | enam | weur | eeur | apac | oc
+    // AWS region isimleri (eu-central-1 gibi) hata verir. Geçersizse "auto"'ya düş.
+    region: (function () {
+      const r = (process.env.S3_REGION || '').toLowerCase().trim();
+      const valid = ['auto', 'wnam', 'enam', 'weur', 'eeur', 'apac', 'oc'];
+      return valid.includes(r) ? r : 'auto';
+    })(),
     accessKey: process.env.S3_ACCESS_KEY,
     secretKey: process.env.S3_SECRET_KEY,
     bucket: process.env.S3_BUCKET,
