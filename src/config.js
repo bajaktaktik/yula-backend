@@ -27,10 +27,14 @@ module.exports = {
   },
   s3: {
     endpoint: process.env.S3_ENDPOINT,
-    region: process.env.S3_REGION,
+    region: process.env.S3_REGION || 'auto', // Cloudflare R2: "auto"
     accessKey: process.env.S3_ACCESS_KEY,
     secretKey: process.env.S3_SECRET_KEY,
     bucket: process.env.S3_BUCKET,
+    // Fotoğrafların mobile'a gösterileceği public base URL.
+    // R2.dev subdomain: https://pub-XXXX.r2.dev
+    // İleride custom domain: https://cdn.abadan.com.tr
+    publicUrl: process.env.S3_PUBLIC_URL,
   },
   fcmKey: process.env.FCM_SERVER_KEY,
 };
