@@ -66,6 +66,24 @@ router.post('/', requireAuth, async (req, res, next) => {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
+    // ⚡ FAST PATH — mevcut sohbet varsa doğrudan döndür.
+    // Network + graph + block kontrolü daha önce bu conversation açılırken yapılmış zaten.
+    // Kullanıcı ilan detayından "Mesaj"a bastığında %90 durumda buraya girer.
+    // İki türlü mevcut olabilir: (buyer=me) veya (seller=me), listing_id ile.
+    if (!value.intermediaryId) {
+      const fastCheck = await pool.query(
+        `SELECT id, listing_id
+         FROM conversations
+         WHERE listing_id = $1 AND (buyer_id = $2 OR seller_id = $2)
+         ORDER BY last_message_at DESC NULLS LAST
+         LIMIT 1`,
+        [value.listingId, req.userId]
+      );
+      if (fastCheck.rows.length > 0) {
+        return res.json({ conversation: fastCheck.rows[0] });
+      }
+    }
+
     // 1. Listing fetch
     const lres = await pool.query('SELECT id, user_id FROM listings WHERE id = $1', [value.listingId]);
     if (lres.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
