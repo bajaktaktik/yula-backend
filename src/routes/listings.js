@@ -775,39 +775,63 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       params.push(req.body.restrictedToGender || null);
       updates.push(`restricted_to_gender = $${params.length}`);
     }
+    // İçerik değişikliği tespiti — bu alanlardan biri değiştiyse hayalet ilan tekrar onaya gider
+    const CONTENT_FIELDS = ['title', 'description', 'categoryId', 'price', 'photoUrls', 'photoThumbs', 'isNegotiable', 'restrictedToGender'];
+    const contentChanged = CONTENT_FIELDS.some((k) => req.body[k] !== undefined);
+
+    // Mevcut hayalet durumunu tek seferde çek
+    const curListing = await client.query(
+      'SELECT ghost_mode, ghost_approval_status FROM listings WHERE id = $1',
+      [req.params.id]
+    );
+    const prevGhost = !!curListing.rows[0]?.ghost_mode;
+    const prevStatus = curListing.rows[0]?.ghost_approval_status;
+
     // Bu request'te ilan yeni pending oldu mu? (admin bildirimi için)
     let becamePending = false;
+
     if (req.body.ghostMode !== undefined) {
       const newGhost = !!req.body.ghostMode;
-      const cur = await client.query(
-        'SELECT ghost_mode, ghost_approval_status FROM listings WHERE id = $1',
-        [req.params.id]
-      );
-      const prevGhost = !!cur.rows[0]?.ghost_mode;
-      const prevStatus = cur.rows[0]?.ghost_approval_status;
-
       params.push(newGhost);
       updates.push(`ghost_mode = $${params.length}`);
 
       if (!prevGhost && newGhost) {
+        // false → true: yeni onay bekle
         updates.push(`ghost_approval_status = 'pending'`);
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
         updates.push(`ghost_approval_at = NULL`);
         becamePending = true;
       } else if (prevGhost && !newGhost) {
+        // true → false: hayalet kapatıldı
         updates.push(`ghost_approval_status = NULL`);
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
         updates.push(`ghost_approval_at = NULL`);
       } else if (prevGhost && newGhost && prevStatus === 'rejected') {
-        // Kullanıcı reddedilen hayalet ilanı düzenleyip tekrar gönderdi → yeni pending
+        // Reddedilen hayaleti tekrar göndermek → yeni pending
         updates.push(`ghost_approval_status = 'pending'`);
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
         updates.push(`ghost_approval_at = NULL`);
         becamePending = true;
       }
+    }
+
+    // Onaylanmış hayalet ilanın İÇERİĞİ değiştiyse → tekrar onaya
+    // (ghostMode değişmese bile). Statü change (sold, active) tetiklemez.
+    if (
+      !becamePending &&
+      contentChanged &&
+      prevGhost &&
+      prevStatus === 'approved' &&
+      req.body.ghostMode !== false // kullanıcı hayaleti kapatmadıysa
+    ) {
+      updates.push(`ghost_approval_status = 'pending'`);
+      updates.push(`ghost_approval_reason = NULL`);
+      updates.push(`ghost_approved_by = NULL`);
+      updates.push(`ghost_approval_at = NULL`);
+      becamePending = true;
     }
 
     if (updates.length > 0) {
