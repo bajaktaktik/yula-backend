@@ -8,7 +8,7 @@ const router = express.Router();
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, display_name, avatar_url, bio, gender, location_city, created_at, onboarded_at, role FROM users WHERE id = $1',
+      'SELECT id, display_name, avatar_url, bio, gender, location_city, created_at, onboarded_at, role, ghost_mode FROM users WHERE id = $1',
       [req.userId]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'not_found' });
@@ -16,6 +16,23 @@ router.get('/me', requireAuth, async (req, res, next) => {
     // Frontend admin menüsünü gösterip göstermeyeceğini bilmek için (DB rolüne göre)
     user.is_admin = user.role === 'admin';
     res.json({ user });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /users/me/ghost-mode — hayalet modu aç/kapa
+router.patch('/me/ghost-mode', requireAuth, async (req, res, next) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'invalid_enabled', message: 'body.enabled true/false olmalı' });
+    }
+    const { rows } = await pool.query(
+      'UPDATE users SET ghost_mode = $1 WHERE id = $2 RETURNING ghost_mode',
+      [enabled, req.userId]
+    );
+    res.json({ ghost_mode: rows[0]?.ghost_mode ?? enabled });
   } catch (err) {
     next(err);
   }
@@ -125,7 +142,7 @@ router.get('/me/connections', requireAuth, async (req, res, next) => {
          JOIN users u ON u.phone_hash = uc.contact_phone_hash
          WHERE uc.user_id = $1 AND u.status = 'active'
        )
-       SELECT u.id, u.avatar_url, u.last_active_at,
+       SELECT u.id, u.avatar_url, u.last_active_at, u.ghost_mode,
               REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS name,
               -- Bu tanıdığın kendi aktif ilan sayısı
               (
@@ -169,7 +186,14 @@ router.get('/me/connections', requireAuth, async (req, res, next) => {
       [req.userId]
     );
 
-    res.json({ connections: rows, count: rows.length });
+    // HAYALET: hayalet tanıdıkların isim/avatarını gizle
+    const result = rows.map((r) => (r.ghost_mode ? {
+      ...r,
+      name: null,
+      avatar_url: null,
+      is_ghost: true,
+    } : { ...r, is_ghost: false }));
+    res.json({ connections: result, count: result.length });
   } catch (err) {
     next(err);
   }

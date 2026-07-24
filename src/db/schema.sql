@@ -63,6 +63,11 @@ CREATE INDEX IF NOT EXISTS idx_listing_shares_listing ON listing_shares(listing_
 -- Kayıt olan kullanıcının hangi share_token üzerinden geldiği (attribution)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_share_id UUID REFERENCES listing_shares(id) ON DELETE SET NULL;
 
+-- Hayalet Modu: kullanıcının adı/avatarı diğer kullanıcılara gizlenir.
+-- Chat'te karşı taraf mesaj yazarsa o tarafın kimliği açılır.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ghost_mode BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_users_ghost_mode ON users(ghost_mode) WHERE ghost_mode = true;
+
 -- Sistem ayarları (bakım modu, feature flags vs.) — key/value
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,

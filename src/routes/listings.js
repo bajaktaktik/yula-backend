@@ -240,6 +240,7 @@ router.get('/', requireAuth, async (req, res, next) => {
              -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
+             u.ghost_mode AS seller_ghost_mode,
              -- Liste kartı için tek foto: cover (ilk) thumbnail
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              -- Auto-loop için tüm foto thumbnails (max 8, base64 değil thumbnail URL)
@@ -261,18 +262,19 @@ router.get('/', requireAuth, async (req, res, next) => {
     const result = rows.map((row) => {
       const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
       const tier = tierInfo.tier;
-      // 2. derece ise gerçek isim SAKLI — via bilgisi verilir
       const isSecond = tier === 2;
+      // HAYALET: satıcı hayalet moddaysa VE bakan kişi kendisi değilse → ad/avatar gizle
+      const isGhost = !!row.seller_ghost_mode && String(row.user_id) !== String(req.userId);
       return {
         ...row,
         degree: tier,
         tier,
-        seller_name: isSecond ? null : row.seller_name,
-        seller_avatar: isSecond ? null : row.seller_avatar,
+        seller_name: (isSecond || isGhost) ? null : row.seller_name,
+        seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
+        is_ghost: isGhost, // frontend WhatsApp buton gizler, 👻 ikon gösterir
         via_user_id: isSecond ? tierInfo.via_user_id : null,
         via_name: isSecond ? tierInfo.via_name : null,
         mutual_count: isSecond ? tierInfo.mutual_count : null,
-        // Auto-loop için tüm foto'lar; boş ise cover ile fallback
         photos: (row.all_photos && row.all_photos.length > 0)
           ? row.all_photos
           : (row.cover_photo ? [row.cover_photo] : []),
@@ -375,6 +377,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
              -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
+             u.ghost_mode AS seller_ghost_mode,
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              -- Vitrin auto-loop için tüm foto thumbnails (10 tane sınır)
              (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering)
@@ -452,6 +455,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
               -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
               u.avatar_url AS seller_avatar,
+              u.ghost_mode AS seller_ghost_mode,
               c.name AS category_name,
               c.slug AS category_slug,
               parent.id AS parent_category_id,
@@ -526,11 +530,15 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     const shareViews = Number(listing.share_views || 0);
     const totalViews = appViews + shareViews;
 
+    // HAYALET: satıcı hayaletse (ve bakan kendisi değilse) ad/avatar gizle
+    const isGhost = !!listing.seller_ghost_mode && !isOwn;
+
     res.json({
       ...listing,
-      // 2. derece için gerçek isim gizli
-      seller_name: isSecond ? null : listing.seller_name,
-      seller_avatar: isSecond ? null : listing.seller_avatar,
+      // 2. derece için gerçek isim gizli, hayalet için de
+      seller_name: (isSecond || isGhost) ? null : listing.seller_name,
+      seller_avatar: (isSecond || isGhost) ? null : listing.seller_avatar,
+      is_ghost: isGhost, // frontend WhatsApp buton gizler, 👻 gösterir
       user_id: isSecond ? null : listing.user_id, // 2. derece'de user_id de gizli (mesaj yönlendirme via'ya)
       real_user_id: listing.user_id, // referans için (mesajlaşmada backend kullanır)
       tier,

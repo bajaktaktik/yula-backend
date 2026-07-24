@@ -18,11 +18,13 @@ router.get('/', requireAuth, async (req, res, next) => {
       `SELECT
          c.id, c.listing_id, c.buyer_id, c.seller_id, c.last_message_at,
          l.title AS listing_title, l.price AS listing_price,
-         -- Sohbet listesinde thumb yeter
          (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS listing_cover,
          other_u.id AS other_user_id,
          COALESCE(uc.contact_name, other_u.display_name) AS other_name,
          other_u.avatar_url AS other_avatar,
+         other_u.ghost_mode AS other_ghost_mode,
+         -- Karşı taraf bu conversation'da hiç mesaj yazmış mı?
+         EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.sender_id = other_u.id) AS other_has_sent,
          (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.sent_at DESC LIMIT 1) AS last_message,
          (SELECT sender_id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.sent_at DESC LIMIT 1) AS last_sender_id,
          (SELECT COUNT(*) FROM messages m
@@ -34,19 +36,22 @@ router.get('/', requireAuth, async (req, res, next) => {
        JOIN users other_u ON other_u.id = (CASE WHEN c.buyer_id = $1 THEN c.seller_id ELSE c.buyer_id END)
        LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = other_u.phone_hash
        WHERE (c.buyer_id = $1 OR c.seller_id = $1)
-         -- Sadece en az 1 mesajı olan sohbetler. Boş (timeout sonrası yarı kalmış) sohbetler
-         -- gizlenir. Kullanıcı aynı ilana tekrar girip Mesaj'a basarsa POST /conversations
-         -- idempotent olduğu için aynı boş sohbet kullanılır, ilk mesaj atılınca görünür olur.
          AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
        ORDER BY c.last_message_at DESC`,
       [req.userId]
     );
-    const result = rows.map((r) => ({
-      ...r,
-      // At-rest şifrelenmiş son mesajı çöz (eski plaintext mesajlar olduğu gibi gelir)
-      last_message: messageCrypto.decrypt(r.last_message),
-      listing_photos: r.listing_cover ? [r.listing_cover] : [],
-    }));
+    const result = rows.map((r) => {
+      // HAYALET: karşı taraf hayalet + bu chat'te hiç mesaj yazmamışsa → adı/avatarı gizle
+      const isOtherGhost = !!r.other_ghost_mode && !r.other_has_sent;
+      return {
+        ...r,
+        other_name: isOtherGhost ? null : r.other_name,
+        other_avatar: isOtherGhost ? null : r.other_avatar,
+        other_is_ghost: isOtherGhost,
+        last_message: messageCrypto.decrypt(r.last_message),
+        listing_photos: r.listing_cover ? [r.listing_cover] : [],
+      };
+    });
     res.json({ conversations: result, count: result.length });
   } catch (err) {
     next(err);
@@ -178,15 +183,32 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
       [req.params.id]
     );
 
-    // Karşı taraf bilgisi
+    // Karşı taraf bilgisi + HAYALET kontrolü
+    // Kural: karşı taraf hayalet + bu chat'te hiç mesaj yazmamışsa → adı/avatarı gizle
+    // (yazdıysa kimliği açık kabul et — "cevap yazınca kimlik iletilir")
     const otherId = c.buyer_id === req.userId ? c.seller_id : c.buyer_id;
     const otherInfo = await pool.query(
-      `SELECT other_u.id, COALESCE(uc.contact_name, other_u.display_name) AS name, other_u.avatar_url
+      `SELECT
+         other_u.id,
+         COALESCE(uc.contact_name, other_u.display_name) AS name,
+         other_u.avatar_url,
+         other_u.ghost_mode,
+         EXISTS(SELECT 1 FROM messages WHERE conversation_id = $3 AND sender_id = other_u.id) AS has_sent
        FROM users other_u
        LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = other_u.phone_hash
        WHERE other_u.id = $2`,
-      [req.userId, otherId]
+      [req.userId, otherId, req.params.id]
     );
+    const otherRow = otherInfo.rows[0];
+    const isOtherGhost = otherRow && !!otherRow.ghost_mode && !otherRow.has_sent;
+    const otherPayload = otherRow
+      ? {
+          id: otherRow.id,
+          name: isOtherGhost ? null : otherRow.name,
+          avatar_url: isOtherGhost ? null : otherRow.avatar_url,
+          is_ghost: isOtherGhost,
+        }
+      : null;
 
     // İlan bilgisi
     const listing = await pool.query(
@@ -211,7 +233,10 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
       // At-rest şifrelemeyi çöz — eski plaintext mesajlar etkilenmez
       messages: messageCrypto.decryptRows(rows, 'content'),
       conversation: { id: c.id, buyer_id: c.buyer_id, seller_id: c.seller_id },
-      other: otherInfo.rows[0] || null,
+      other: otherPayload,
+      // Bakan kullanıcı da hayaletse ve bu chat'te henüz mesaj yazmadıysa,
+      // frontend "cevap yazarsan kimliğin iletilir" uyarısı göster
+      show_ghost_warning: isOtherGhost, // karşı taraf hayalet, senin uyarı görmen gerek
       listing: listingData,
     });
   } catch (err) {

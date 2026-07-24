@@ -102,6 +102,7 @@ router.get('/', requireAuth, async (req, res, next) => {
              r.user_id,
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\\[DEMO\\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
+             u.ghost_mode AS seller_ghost_mode,
              EXISTS(SELECT 1 FROM hidden_requests WHERE user_id = '${req.userId}' AND request_id = r.id) AS is_hidden
       FROM requests r
       JOIN users u ON u.id = r.user_id
@@ -117,12 +118,14 @@ router.get('/', requireAuth, async (req, res, next) => {
       const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
       const tier = tierInfo.tier;
       const isSecond = tier === 2;
+      const isGhost = !!row.seller_ghost_mode && String(row.user_id) !== String(req.userId);
       return {
         ...row,
         degree: tier,
         tier,
-        seller_name: isSecond ? null : row.seller_name,
-        seller_avatar: isSecond ? null : row.seller_avatar,
+        seller_name: (isSecond || isGhost) ? null : row.seller_name,
+        seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
+        is_ghost: isGhost,
         via_user_id: isSecond ? tierInfo.via_user_id : null,
         via_name: isSecond ? tierInfo.via_name : null,
         mutual_count: isSecond ? tierInfo.mutual_count : null,
@@ -291,6 +294,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       `SELECT r.*,
               REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\\[DEMO\\] ', '') AS seller_name,
               u.avatar_url AS seller_avatar,
+             u.ghost_mode AS seller_ghost_mode,
               c.name AS category_name, c.slug AS category_slug
        FROM requests r
        JOIN users u ON u.id = r.user_id
@@ -325,10 +329,13 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       pool.query('UPDATE requests SET view_count = view_count + 1 WHERE id = $1', [req.params.id]).catch(() => {});
     }
 
+    const isGhost = !!request.seller_ghost_mode && !isOwn;
+
     res.json({
       ...request,
-      seller_name: isSecond ? null : request.seller_name,
-      seller_avatar: isSecond ? null : request.seller_avatar,
+      seller_name: (isSecond || isGhost) ? null : request.seller_name,
+      seller_avatar: (isSecond || isGhost) ? null : request.seller_avatar,
+      is_ghost: isGhost,
       user_id: isSecond ? null : request.user_id,
       real_user_id: request.user_id,
       tier,
