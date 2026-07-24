@@ -142,8 +142,19 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
 -- Admin öne çıkarma — bu tarih geçince otomatik normal ilan
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
 -- İlan bazlı hayalet modu: kullanıcı normal olsa bile tek ilan için hayalet olarak yayınlanabilir.
--- Feed'de OR mantığı: (user.ghost_mode OR listings.ghost_mode) → is_ghost
+-- Feed'de OR mantığı: (user.ghost_mode OR (listings.ghost_mode AND approved)) → is_ghost
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS ghost_mode BOOLEAN NOT NULL DEFAULT false;
+
+-- Hayalet ilan admin onay akışı:
+--   NULL     = hayalet değil (normal ilan)
+--   'pending'  = onay bekliyor — feed'de görünmez
+--   'approved' = onaylandı — hayalet olarak feed'de görünür
+--   'rejected' = reddedildi — kullanıcıya bildirim, ilan silinir/normal olur
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS ghost_approval_status TEXT;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS ghost_approval_reason TEXT;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS ghost_approved_by UUID REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS ghost_approval_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_listings_ghost_pending ON listings(created_at DESC) WHERE ghost_approval_status = 'pending';
 
 -- Idempotency — timeout/retry durumunda duplicate ilan önle
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS idempotency_key TEXT;

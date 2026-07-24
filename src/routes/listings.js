@@ -157,6 +157,9 @@ router.get('/', requireAuth, async (req, res, next) => {
         )
       )`,
       'l.admin_removed_at IS NULL',
+      // Hayalet onay filtresi: pending hayalet ilanlar feed'de görünmez.
+      // Normal ilanlar (ghost_mode=false) VEYA onaylanmış hayaletler (approved) görünür.
+      "(l.ghost_mode = false OR l.ghost_approval_status = 'approved')",
       // Cinsiyet kısıtı — kullanıcı kendi cinsiyetine uyan ilanları görür
       genderFilter(myGender),
       // Kendi ilanlarını akışta görmesin (sadece İlanlarım sekmesinde)
@@ -318,6 +321,7 @@ router.get('/mine', requireAuth, async (req, res, next) => {
               l.location_city, l.location_district, l.created_at, l.updated_at, l.status,
               l.category_id, c.name AS category_name,
               l.restricted_to_gender, l.is_negotiable,
+              l.ghost_mode, l.ghost_approval_status, l.ghost_approval_reason,
               (SELECT p.url FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
               (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count
        FROM listings l
@@ -487,6 +491,15 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       }
     }
 
+    // Pending hayalet ilan — sadece sahibi ve admin görebilir
+    if (
+      listing.user_id !== req.userId &&
+      listing.ghost_mode &&
+      listing.ghost_approval_status === 'pending'
+    ) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+
     const isOwn = listing.user_id === req.userId;
     const inFirstDegree = visible.has(listing.user_id);
     let tier = isOwn ? 0 : (inFirstDegree ? 1 : null);
@@ -603,12 +616,15 @@ router.post('/', requireAuth, async (req, res, next) => {
       }
       // Aksi takdirde sessizce yok say (kullanıcı kendi cinsiyetinin dışındaki bir kısıtı koyamaz)
     }
+    // Hayalet ilan: admin onayı bekler
+    const approvalStatus = value.ghostMode ? 'pending' : null;
+
     let ins;
     try {
       ins = await client.query(
-        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key, ghost_mode)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey, !!value.ghostMode]
+        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key, ghost_mode, ghost_approval_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey, !!value.ghostMode, approvalStatus]
       );
     } catch (dbErr) {
       // 23505 = unique_violation — race condition: aynı key paralel geldi
@@ -741,8 +757,29 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       updates.push(`restricted_to_gender = $${params.length}`);
     }
     if (req.body.ghostMode !== undefined) {
-      params.push(!!req.body.ghostMode);
+      const newGhost = !!req.body.ghostMode;
+      // Mevcut durumu bul (own.rows[0] var — daha üstte fetch edilmiş olabilir)
+      // Yoksa DB'den bak.
+      const cur = await client.query('SELECT ghost_mode, ghost_approval_status FROM listings WHERE id = $1', [req.params.id]);
+      const prevGhost = !!cur.rows[0]?.ghost_mode;
+
+      params.push(newGhost);
       updates.push(`ghost_mode = $${params.length}`);
+
+      if (!prevGhost && newGhost) {
+        // false → true: yeni onay bekle
+        updates.push(`ghost_approval_status = 'pending'`);
+        updates.push(`ghost_approval_reason = NULL`);
+        updates.push(`ghost_approved_by = NULL`);
+        updates.push(`ghost_approval_at = NULL`);
+      } else if (prevGhost && !newGhost) {
+        // true → false: hayalet kapatıldı, onay bilgilerini temizle
+        updates.push(`ghost_approval_status = NULL`);
+        updates.push(`ghost_approval_reason = NULL`);
+        updates.push(`ghost_approved_by = NULL`);
+        updates.push(`ghost_approval_at = NULL`);
+      }
+      // Aynı kalırsa dokunma
     }
 
     if (updates.length > 0) {

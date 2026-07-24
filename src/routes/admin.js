@@ -1342,6 +1342,150 @@ router.get('/system/r2-stats', requireAuth, requireAdmin, async (req, res, next)
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// GHOST APPROVALS — Hayalet ilan onay kuyruğu
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/ghost-approvals — bekleyen hayalet ilanlar
+router.get('/ghost-approvals', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         l.id, l.title, l.description, l.price, l.currency,
+         l.location_city, l.created_at,
+         l.user_id,
+         u.display_name AS user_name,
+         u.avatar_url AS user_avatar,
+         (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+         (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
+         c.name AS category_name
+       FROM listings l
+       JOIN users u ON u.id = l.user_id
+       LEFT JOIN categories c ON c.id = l.category_id
+       WHERE l.ghost_approval_status = 'pending'
+         AND l.status = 'active'
+         AND l.admin_removed_at IS NULL
+       ORDER BY l.created_at ASC`
+    );
+    res.json({ ghost_approvals: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/ghost-approvals/:id/approve
+router.post('/ghost-approvals/:id/approve', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const l = await pool.query(
+      `SELECT id, user_id, title, ghost_approval_status
+       FROM listings WHERE id = $1`,
+      [req.params.id]
+    );
+    if (l.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    if (l.rows[0].ghost_approval_status !== 'pending') {
+      return res.status(400).json({ error: 'not_pending', message: 'İlan zaten karar verilmiş.' });
+    }
+    await pool.query(
+      `UPDATE listings SET
+         ghost_approval_status = 'approved',
+         ghost_approved_by = $2,
+         ghost_approval_at = now(),
+         ghost_approval_reason = NULL
+       WHERE id = $1`,
+      [req.params.id, req.userId]
+    );
+
+    // Audit log
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'ghost_approve', 'listing', $2, NULL)`,
+      [req.userId, req.params.id]
+    ).catch(() => {});
+
+    // Kullanıcıya push + in-app bildirim
+    (async () => {
+      try {
+        const { sendToUser } = require('../services/push');
+        await sendToUser(l.rows[0].user_id, {
+          title: '👻 Hayalet Onaylandı',
+          body: `"${l.rows[0].title}" ilanın onaylandı ve hayalet olarak yayınlandı.`,
+          data: {
+            type: 'ghost_approved',
+            listing_id: req.params.id,
+          },
+        });
+      } catch (e) {
+        console.warn('[ghost-approve] push fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/ghost-approvals/:id/reject
+// Body: { reason: string }
+router.post('/ghost-approvals/:id/reject', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const reason = (req.body?.reason || '').toString().trim();
+    if (reason.length < 3 || reason.length > 500) {
+      return res.status(400).json({ error: 'invalid_reason', message: 'Sebep 3-500 karakter olmalı.' });
+    }
+    const l = await pool.query(
+      `SELECT id, user_id, title, ghost_approval_status
+       FROM listings WHERE id = $1`,
+      [req.params.id]
+    );
+    if (l.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    if (l.rows[0].ghost_approval_status !== 'pending') {
+      return res.status(400).json({ error: 'not_pending' });
+    }
+
+    // Reddet: hayalet iptal, ilan normal olarak yayınlanabilir seçeneği kullanıcıya bırakılır.
+    // Şu an: ghost_mode = false yap → ilan normal görünür olur.
+    await pool.query(
+      `UPDATE listings SET
+         ghost_mode = false,
+         ghost_approval_status = 'rejected',
+         ghost_approved_by = $2,
+         ghost_approval_at = now(),
+         ghost_approval_reason = $3
+       WHERE id = $1`,
+      [req.params.id, req.userId, reason]
+    );
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'ghost_reject', 'listing', $2, $3)`,
+      [req.userId, req.params.id, reason]
+    ).catch(() => {});
+
+    // Kullanıcıya bildirim
+    (async () => {
+      try {
+        const { sendToUser } = require('../services/push');
+        await sendToUser(l.rows[0].user_id, {
+          title: '👻 Hayalet İsteği Reddedildi',
+          body: `"${l.rows[0].title}" ilanın hayalet olamadı: ${reason.slice(0, 80)}. İlan normal olarak yayına girdi.`,
+          data: {
+            type: 'ghost_rejected',
+            listing_id: req.params.id,
+            reason,
+          },
+        });
+      } catch (e) {
+        console.warn('[ghost-reject] push fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // GROWTH — Share leaderboard
 // ═══════════════════════════════════════════════════════════════════
 
