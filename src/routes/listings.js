@@ -264,28 +264,32 @@ router.get('/', requireAuth, async (req, res, next) => {
     `;
     const { rows } = await pool.query(sql, params);
 
-    const result = rows.map((row) => {
-      const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
-      const tier = tierInfo.tier;
-      const isSecond = tier === 2;
-      // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → gizle
-      const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
-      return {
-        ...row,
-        degree: tier,
-        tier,
-        seller_name: (isSecond || isGhost) ? null : row.seller_name,
-        seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
-        is_ghost: isGhost, // frontend WhatsApp buton gizler, 👻 ikon gösterir
-        via_user_id: isSecond ? tierInfo.via_user_id : null,
-        via_name: isSecond ? tierInfo.via_name : null,
-        mutual_count: isSecond ? tierInfo.mutual_count : null,
-        photos: (row.all_photos && row.all_photos.length > 0)
-          ? row.all_photos
-          : (row.cover_photo ? [row.cover_photo] : []),
-        photo_count: row.photo_count || 0,
-      };
-    });
+    const result = rows
+      .map((row) => {
+        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
+        const tier = tierInfo.tier;
+        const isSecond = tier === 2;
+        // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → gizle
+        const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
+        return {
+          ...row,
+          degree: tier,
+          tier,
+          seller_name: (isSecond || isGhost) ? null : row.seller_name,
+          seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
+          is_ghost: isGhost,
+          via_user_id: isSecond ? tierInfo.via_user_id : null,
+          via_name: isSecond ? tierInfo.via_name : null,
+          mutual_count: isSecond ? tierInfo.mutual_count : null,
+          photos: (row.all_photos && row.all_photos.length > 0)
+            ? row.all_photos
+            : (row.cover_photo ? [row.cover_photo] : []),
+          photo_count: row.photo_count || 0,
+        };
+      })
+      // 2. derece + hayalet birleşimi anlamsız (satıcı anonim + ilan anonim → iletişim güç)
+      // → feed'den hariç tut
+      .filter((r) => !(r.tier === 2 && r.is_ghost));
 
     // Sold ilan tracking — bu feed'de görülen sold ilanları kaydet
     // İkinci gösterime kadar 24 saat sayacı başlar. Sadece bu kullanıcı için.
@@ -548,6 +552,11 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 
     // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse
     const isGhost = !!(listing.seller_ghost_mode || listing.ghost_mode) && !isOwn;
+
+    // 2. derece + hayalet — anlamsız birleşim, 404 dön
+    if (isSecond && isGhost) {
+      return res.status(404).json({ error: 'not_found' });
+    }
 
     res.json({
       ...listing,

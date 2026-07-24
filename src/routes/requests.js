@@ -114,23 +114,26 @@ router.get('/', requireAuth, async (req, res, next) => {
     `;
     const { rows } = await pool.query(sql, params);
 
-    const result = rows.map((row) => {
-      const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
-      const tier = tierInfo.tier;
-      const isSecond = tier === 2;
-      const isGhost = !!row.seller_ghost_mode && String(row.user_id) !== String(req.userId);
-      return {
-        ...row,
-        degree: tier,
-        tier,
-        seller_name: (isSecond || isGhost) ? null : row.seller_name,
-        seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
-        is_ghost: isGhost,
-        via_user_id: isSecond ? tierInfo.via_user_id : null,
-        via_name: isSecond ? tierInfo.via_name : null,
-        mutual_count: isSecond ? tierInfo.mutual_count : null,
-      };
-    });
+    const result = rows
+      .map((row) => {
+        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
+        const tier = tierInfo.tier;
+        const isSecond = tier === 2;
+        const isGhost = !!row.seller_ghost_mode && String(row.user_id) !== String(req.userId);
+        return {
+          ...row,
+          degree: tier,
+          tier,
+          seller_name: (isSecond || isGhost) ? null : row.seller_name,
+          seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
+          is_ghost: isGhost,
+          via_user_id: isSecond ? tierInfo.via_user_id : null,
+          via_name: isSecond ? tierInfo.via_name : null,
+          mutual_count: isSecond ? tierInfo.mutual_count : null,
+        };
+      })
+      // 2. derece hayalet — feed'den hariç
+      .filter((r) => !(r.tier === 2 && r.is_ghost));
 
     // Fulfilled request tracking — bu feed'de görülen fulfilled request'leri kaydet
     const fulfilledIds = result.filter((r) => r.status === 'fulfilled').map((r) => r.id);
@@ -330,6 +333,11 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     }
 
     const isGhost = !!request.seller_ghost_mode && !isOwn;
+
+    // 2. derece hayalet birleşimi — 404 (feed'de de hariç)
+    if (isSecond && isGhost) {
+      return res.status(404).json({ error: 'not_found' });
+    }
 
     res.json({
       ...request,
