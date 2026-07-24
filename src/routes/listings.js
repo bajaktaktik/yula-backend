@@ -652,6 +652,7 @@ router.post('/', requireAuth, async (req, res, next) => {
 
     // Admin bildirimi — yeni ilan (arka planda, ilan cevabını geciktirmez)
     // Kendi ilanı ise admin'e kendine push atmayı önle (excludeUserId)
+    // Hayalet onay bekleyen ilanlar → farklı push tipi (öncelikli), yayına da girmedi
     (async () => {
       try {
         const { sendToAllAdmins } = require('../services/push');
@@ -661,6 +662,24 @@ router.post('/', requireAuth, async (req, res, next) => {
           [req.userId]
         );
         const senderName = uRes.rows[0]?.name || 'Bir kullanıcı';
+
+        // Hayalet ilan pending durumunda ise ayrı bildirim (yayınlanmadı, admin onay bekliyor)
+        if (approvalStatus === 'pending') {
+          await sendToAllAdmins(
+            {
+              title: '👻 Hayalet İlan Onay Bekliyor',
+              body: `${senderName}: ${listing.title}`,
+              data: {
+                type: 'admin_new_ghost',
+                listing_id: listing.id,
+                user_id: req.userId,
+              },
+            },
+            req.userId
+          );
+          return; // normal admin bildirimi gönderme — henüz yayınlanmadı
+        }
+
         await sendToAllAdmins(
           {
             title: '📦 Yeni İlan',
@@ -671,7 +690,7 @@ router.post('/', requireAuth, async (req, res, next) => {
               user_id: req.userId,
             },
           },
-          req.userId // kendi ilanı ise kendine push atma
+          req.userId
         );
       } catch (e) {
         console.error('[listings] admin notify fail:', e.message);
