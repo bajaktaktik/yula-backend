@@ -1286,6 +1286,61 @@ router.get('/system/sentry-summary', requireAuth, requireAdmin, async (req, res,
   }
 });
 
+// GET /admin/system/r2-stats — Cloudflare R2 storage durumu (DB-based, hızlı)
+router.get('/system/r2-stats', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const config = require('../config');
+    const storage = require('../services/storage');
+
+    const publicUrl = config.s3.publicUrl || null;
+    const bucket = config.s3.bucket || null;
+    const endpoint = config.s3.endpoint || null;
+    const region = config.s3.region || null;
+    const ready = storage.isReady();
+
+    // DB'den foto istatistikleri
+    // Not: cdn.abadan.com.tr yerine mevcut publicUrl prefix'i kullanılır (esneklik için)
+    const prefix = publicUrl || 'https://';
+    const r = await pool.query(
+      `SELECT
+         COUNT(*)::int                                                           AS total_photos,
+         COUNT(*) FILTER (WHERE url LIKE $1 || '%')::int                         AS r2_full_photos,
+         COUNT(*) FILTER (WHERE thumb_url LIKE $1 || '%')::int                   AS r2_thumb_photos,
+         COUNT(*) FILTER (WHERE url LIKE 'data:image/%')::int                    AS legacy_base64,
+         COUNT(DISTINCT listing_id)::int                                         AS listings_with_photos
+       FROM listing_photos`,
+      [prefix]
+    );
+    const stats = r.rows[0];
+
+    // Son 24 saat listing_photos inseeeer sayısı (upload proxy metric)
+    const r24 = await pool.query(
+      `SELECT
+         (SELECT COUNT(*)::int FROM listings WHERE created_at >= now() - interval '24 hours') AS listings_24h,
+         (SELECT COUNT(*)::int FROM listings WHERE created_at >= now() - interval '7 days')   AS listings_7d`
+    );
+
+    res.json({
+      configured: ready,
+      bucket,
+      endpoint,
+      region,
+      public_url: publicUrl,
+      total_photos: stats.total_photos,
+      r2_full_photos: stats.r2_full_photos,
+      r2_thumb_photos: stats.r2_thumb_photos,
+      legacy_base64: stats.legacy_base64,
+      listings_with_photos: stats.listings_with_photos,
+      listings_last_24h: r24.rows[0].listings_24h,
+      listings_last_7d: r24.rows[0].listings_7d,
+      note: 'DB-based stats. Gerçek R2 storage için Cloudflare Dashboard veya API token eklenirse Analytics gösterilir.',
+    });
+  } catch (err) {
+    console.error('[admin] r2-stats fail:', err.message);
+    next(err);
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // GROWTH — Share leaderboard
 // ═══════════════════════════════════════════════════════════════════
