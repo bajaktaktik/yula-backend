@@ -22,7 +22,9 @@ router.get('/', requireAuth, async (req, res, next) => {
          other_u.id AS other_user_id,
          COALESCE(uc.contact_name, other_u.display_name) AS other_name,
          other_u.avatar_url AS other_avatar,
-         other_u.ghost_mode AS other_ghost_mode,
+         other_u.ghost_mode AS other_user_ghost,
+         -- Karşı taraf ilan sahibi VE ilan onaylı hayaletse → gizli
+         (l.ghost_mode = true AND l.ghost_approval_status = 'approved' AND l.user_id = other_u.id) AS other_listing_ghost,
          -- Karşı taraf bu conversation'da hiç mesaj yazmış mı?
          EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.sender_id = other_u.id) AS other_has_sent,
          (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.sent_at DESC LIMIT 1) AS last_message,
@@ -41,8 +43,8 @@ router.get('/', requireAuth, async (req, res, next) => {
       [req.userId]
     );
     const result = rows.map((r) => {
-      // HAYALET: karşı taraf hayalet + bu chat'te hiç mesaj yazmamışsa → adı/avatarı gizle
-      const isOtherGhost = !!r.other_ghost_mode && !r.other_has_sent;
+      // HAYALET: user-level VEYA listing-level, + karşı taraf henüz mesaj yazmamışsa gizle
+      const isOtherGhost = !!((r.other_user_ghost || r.other_listing_ghost) && !r.other_has_sent);
       return {
         ...r,
         other_name: isOtherGhost ? null : r.other_name,
@@ -185,22 +187,25 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
 
     // Karşı taraf bilgisi + HAYALET kontrolü
     // Kural: karşı taraf hayalet + bu chat'te hiç mesaj yazmamışsa → adı/avatarı gizle
-    // (yazdıysa kimliği açık kabul et — "cevap yazınca kimlik iletilir")
+    // Hayalet iki türlü: (a) user-level ghost_mode (b) ilan-bazlı ghost_mode + karşı taraf ilan sahibi
     const otherId = c.buyer_id === req.userId ? c.seller_id : c.buyer_id;
     const otherInfo = await pool.query(
       `SELECT
          other_u.id,
          COALESCE(uc.contact_name, other_u.display_name) AS name,
          other_u.avatar_url,
-         other_u.ghost_mode,
+         other_u.ghost_mode AS user_ghost,
+         -- Karşı taraf ilan sahibiyse VE ilan onaylı hayaletse → gizlenir
+         (l.ghost_mode = true AND l.ghost_approval_status = 'approved' AND l.user_id = other_u.id) AS listing_ghost_for_other,
          EXISTS(SELECT 1 FROM messages WHERE conversation_id = $3 AND sender_id = other_u.id) AS has_sent
-       FROM users other_u
+       FROM users other_u, listings l
        LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = other_u.phone_hash
-       WHERE other_u.id = $2`,
-      [req.userId, otherId, req.params.id]
+       WHERE other_u.id = $2 AND l.id = $4`,
+      [req.userId, otherId, req.params.id, c.listing_id]
     );
     const otherRow = otherInfo.rows[0];
-    const isOtherGhost = otherRow && !!otherRow.ghost_mode && !otherRow.has_sent;
+    const otherIsGhostByAnything = otherRow && (otherRow.user_ghost || otherRow.listing_ghost_for_other);
+    const isOtherGhost = !!(otherIsGhostByAnything && !otherRow.has_sent);
     const otherPayload = otherRow
       ? {
           id: otherRow.id,
