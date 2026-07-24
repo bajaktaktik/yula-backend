@@ -2234,10 +2234,58 @@ async function renderOps() {
               </button>
             </div>`).join('')}
         </div>
+
+        <!-- Demo Kullanıcı (Test) -->
+        <div class="bg-white rounded-xl border border-slate-200 p-5 col-span-2">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <div class="text-lg font-bold">🧪 Demo Kullanıcı Oluştur</div>
+              <div class="text-xs text-slate-500">Test için hızlı hesap. Zaten varsa PIN + isim güncellenir.</div>
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2 mb-3">
+            <input id="demo-phone" placeholder="0 500 111 22 33" value="0 500 111 22 33"
+              class="px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+            <input id="demo-pin" placeholder="4964" value="4964"
+              class="px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+            <input id="demo-name" placeholder="Demo Kullanıcı" value="Demo Kullanıcı"
+              class="px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+          </div>
+          <button onclick="createDemoUser()"
+            class="w-full px-4 py-2 rounded-lg bg-slate-900 hover:bg-black text-white font-semibold">
+            🚀 Oluştur / Güncelle
+          </button>
+          <div id="demo-result" class="mt-3 text-xs"></div>
+        </div>
       </div>
     `;
   } catch (err) {
     c.innerHTML = '<div class="text-red-600 p-4">Hata: ' + err.message + '</div>';
+  }
+}
+
+async function createDemoUser() {
+  const phone = document.getElementById('demo-phone').value.trim();
+  const pin = document.getElementById('demo-pin').value.trim();
+  const name = document.getElementById('demo-name').value.trim();
+  const out = document.getElementById('demo-result');
+  out.innerHTML = '<div class="text-slate-500">Gönderiliyor...</div>';
+  try {
+    const r = await apiJson('/admin/create-demo-user', {
+      method: 'POST',
+      body: JSON.stringify({ phone, pin, name }),
+    });
+    out.innerHTML = `
+      <div class="p-3 bg-green-50 border border-green-300 rounded">
+        <div class="font-bold text-green-800">✅ ${r.action === 'created' ? 'Oluşturuldu' : 'Güncellendi'}</div>
+        <div class="text-slate-700 mt-1">
+          📱 <b>${phone}</b> · 🔑 PIN <b>${pin}</b> · 👤 ${name}<br>
+          <span class="text-xs text-slate-500">User ID: ${r.user_id}</span>
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    out.innerHTML = `<div class="p-3 bg-red-50 border border-red-300 rounded text-red-800">❌ ${e.message}</div>`;
   }
 }
 

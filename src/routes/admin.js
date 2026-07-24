@@ -1486,6 +1486,76 @@ router.post('/ghost-approvals/:id/reject', requireAuth, requireAdmin, async (req
   }
 });
 
+// POST /admin/create-demo-user — hızlı test için demo hesap yaratır/günceller.
+// Body: { phone: "0 500 111 22 33", pin: "4964", name: "Demo" }
+// Idempotent — telefon zaten kayıtlıysa PIN + isim güncellenir.
+router.post('/create-demo-user', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { phone, pin, name } = req.body || {};
+    if (!phone || !pin || !name) {
+      return res.status(400).json({ error: 'missing_fields', message: 'phone, pin, name gerekli' });
+    }
+    if (String(pin).length < 4) {
+      return res.status(400).json({ error: 'weak_pin', message: 'PIN en az 4 haneli olmalı' });
+    }
+
+    const { normalizePhone } = require('../utils/phone');
+    const crypto = require('crypto');
+    const bcrypt = require('bcrypt');
+
+    const e164 = normalizePhone(String(phone));
+    if (!e164) {
+      return res.status(400).json({ error: 'invalid_phone', message: 'Türk cep formatına uygun olmalı (05XX ile başlamalı)' });
+    }
+
+    const pepper = process.env.PHONE_HASH_PEPPER;
+    if (!pepper) {
+      return res.status(500).json({ error: 'no_pepper', message: 'PHONE_HASH_PEPPER env eksik' });
+    }
+
+    const clientSha = crypto.createHash('sha256').update(e164).digest('hex');
+    const phoneHash = crypto.createHmac('sha256', pepper).update(clientSha).digest('hex');
+    const pinHash = await bcrypt.hash(String(pin), 10);
+
+    const existing = await pool.query('SELECT id FROM users WHERE phone_hash = $1', [phoneHash]);
+    let userId;
+    let action;
+    if (existing.rows.length > 0) {
+      userId = existing.rows[0].id;
+      action = 'updated';
+      await pool.query(
+        `UPDATE users
+           SET pin_hash = $1, display_name = $2, status = 'active',
+               onboarded_at = COALESCE(onboarded_at, now())
+         WHERE id = $3`,
+        [pinHash, String(name), userId]
+      );
+    } else {
+      action = 'created';
+      const r = await pool.query(
+        `INSERT INTO users (phone_hash, display_name, pin_hash, status, onboarded_at, role)
+         VALUES ($1, $2, $3, 'active', now(), 'user') RETURNING id`,
+        [phoneHash, String(name), pinHash]
+      );
+      userId = r.rows[0].id;
+    }
+
+    console.log(`[admin] demo user ${action}: ${e164} → user_id=${userId}`);
+    res.json({
+      ok: true,
+      action,
+      user_id: userId,
+      phone: e164,
+      display_name: name,
+      pin_length: String(pin).length,
+      note: 'Kullanıcı hazır — telefon + PIN ile mobile\'dan giriş yapabilir.',
+    });
+  } catch (err) {
+    console.error('[admin] create-demo-user fail:', err.message);
+    next(err);
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // GROWTH — Share leaderboard
 // ═══════════════════════════════════════════════════════════════════
