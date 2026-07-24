@@ -3282,7 +3282,7 @@ async function ghostReject(id) {
   try {
     await apiJson(`/admin/ghost-approvals/${id}/reject`, {
       method: 'POST',
-      body: { reason: reason.trim() },
+      body: JSON.stringify({ reason: reason.trim() }),
     });
     renderGhosts();
   } catch (err) {
