@@ -78,6 +78,8 @@ async function getSecondDegreeMap(userId) {
          AND u2.status = 'active'
          AND u2.id != $1
          AND u2.id::text != ALL($3::text[])
+         -- Hayalet moddaki aracıları sayma → mutual_count ve intermediaries listesi tutarlı
+         AND u_via.ghost_mode = false
      ),
      first_via AS (
        SELECT DISTINCT ON (user_id)
@@ -139,6 +141,8 @@ async function getIntermediariesFor(userId, targetUserId) {
        AND uc_me.contact_phone_hash = u_via.phone_hash
      WHERE uc_via.user_id = ANY($2::uuid[])
        AND u2.id = $3
+       -- Hayalet moddaki aracıları listeden çıkar — kimliği açık edilmesin
+       AND u_via.ghost_mode = false
      ORDER BY name`,
     [userId, firstDegreeIds, targetUserId]
   );
