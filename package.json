@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "migrate": "node src/db/migrate.js",
     "migrate:r2": "node scripts/migrate-base64-to-r2.js",
+    "demo:user": "node scripts/create-demo-user.js",
     "release": "node src/db/migrate.js",
     "postinstall": "echo 'Abadan backend installed'",
     "test": "jest"
