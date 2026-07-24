@@ -758,10 +758,12 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
     if (req.body.ghostMode !== undefined) {
       const newGhost = !!req.body.ghostMode;
-      // Mevcut durumu bul (own.rows[0] var — daha üstte fetch edilmiş olabilir)
-      // Yoksa DB'den bak.
-      const cur = await client.query('SELECT ghost_mode, ghost_approval_status FROM listings WHERE id = $1', [req.params.id]);
+      const cur = await client.query(
+        'SELECT ghost_mode, ghost_approval_status FROM listings WHERE id = $1',
+        [req.params.id]
+      );
       const prevGhost = !!cur.rows[0]?.ghost_mode;
+      const prevStatus = cur.rows[0]?.ghost_approval_status;
 
       params.push(newGhost);
       updates.push(`ghost_mode = $${params.length}`);
@@ -778,8 +780,14 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
         updates.push(`ghost_approval_at = NULL`);
+      } else if (prevGhost && newGhost && prevStatus === 'rejected') {
+        // Kullanıcı reddedilen hayalet ilanı düzenleyip tekrar gönderdi → yeni pending
+        updates.push(`ghost_approval_status = 'pending'`);
+        updates.push(`ghost_approval_reason = NULL`);
+        updates.push(`ghost_approved_by = NULL`);
+        updates.push(`ghost_approval_at = NULL`);
       }
-      // Aynı kalırsa dokunma
+      // Diğer durumlar (pending kal, approved kal): dokunma
     }
 
     if (updates.length > 0) {

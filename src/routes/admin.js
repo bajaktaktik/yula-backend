@@ -1442,11 +1442,12 @@ router.post('/ghost-approvals/:id/reject', requireAuth, requireAdmin, async (req
       return res.status(400).json({ error: 'not_pending' });
     }
 
-    // Reddet: hayalet iptal, ilan normal olarak yayınlanabilir seçeneği kullanıcıya bırakılır.
-    // Şu an: ghost_mode = false yap → ilan normal görünür olur.
+    // Reddet: ilan HAYALET olarak da NORMAL olarak da yayına GİRMEZ.
+    // ghost_mode = true kalır, ghost_approval_status = 'rejected'.
+    // Feed filtresi bunu görmez. Kullanıcı MyListings'te "Reddedildi" görür,
+    // düzenleyip yeniden gönderirse PATCH otomatik pending yapar.
     await pool.query(
       `UPDATE listings SET
-         ghost_mode = false,
          ghost_approval_status = 'rejected',
          ghost_approved_by = $2,
          ghost_approval_at = now(),
@@ -1461,13 +1462,13 @@ router.post('/ghost-approvals/:id/reject', requireAuth, requireAdmin, async (req
       [req.userId, req.params.id, reason]
     ).catch(() => {});
 
-    // Kullanıcıya bildirim
+    // Kullanıcıya bildirim — düzelt ve tekrar gönder
     (async () => {
       try {
         const { sendToUser } = require('../services/push');
         await sendToUser(l.rows[0].user_id, {
-          title: '👻 Hayalet İsteği Reddedildi',
-          body: `"${l.rows[0].title}" ilanın hayalet olamadı: ${reason.slice(0, 80)}. İlan normal olarak yayına girdi.`,
+          title: '👻 Hayalet İlanın Reddedildi',
+          body: `"${l.rows[0].title}" onaylanmadı: ${reason.slice(0, 100)}\n\nDüzenleyip tekrar gönderebilirsin. İlanın hâlâ yayına girmedi.`,
           data: {
             type: 'ghost_rejected',
             listing_id: req.params.id,
