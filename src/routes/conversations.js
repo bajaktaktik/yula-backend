@@ -198,9 +198,10 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
          -- Karşı taraf ilan sahibiyse VE ilan onaylı hayaletse → gizlenir
          (l.ghost_mode = true AND l.ghost_approval_status = 'approved' AND l.user_id = other_u.id) AS listing_ghost_for_other,
          EXISTS(SELECT 1 FROM messages WHERE conversation_id = $3 AND sender_id = other_u.id) AS has_sent
-       FROM users other_u, listings l
+       FROM users other_u
        LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = other_u.phone_hash
-       WHERE other_u.id = $2 AND l.id = $4`,
+       LEFT JOIN listings l ON l.id = $4
+       WHERE other_u.id = $2`,
       [req.userId, otherId, req.params.id, c.listing_id]
     );
     const otherRow = otherInfo.rows[0];
