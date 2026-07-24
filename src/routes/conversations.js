@@ -210,6 +210,22 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
         }
       : null;
 
+    // BEN hayalet miyim? (user-level ghost VEYA bu ilan hayaletse + ben ilan sahibiyim)
+    // Ve bu chat'te henüz mesaj yazmamış mıyım? Öyleyse cevap yazınca kimliğim iletilir → uyarı göster
+    const meRes = await pool.query(
+      `SELECT
+         u.ghost_mode AS user_ghost,
+         (l.ghost_mode = true AND l.user_id = $1 AND l.ghost_approval_status = 'approved') AS listing_ghost_and_mine,
+         EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id = $3 AND m.sender_id = $1) AS me_has_sent
+       FROM users u, listings l
+       WHERE u.id = $1 AND l.id = $2`,
+      [req.userId, c.listing_id, req.params.id]
+    );
+    const meGhostRow = meRes.rows[0];
+    const meIsGhost = meGhostRow && (meGhostRow.user_ghost || meGhostRow.listing_ghost_and_mine);
+    const meHasSent = meGhostRow && meGhostRow.me_has_sent;
+    const showSelfGhostWarning = !!(meIsGhost && !meHasSent);
+
     // İlan bilgisi
     const listing = await pool.query(
       `SELECT id, title, price, is_negotiable,
@@ -230,13 +246,13 @@ router.get('/:id/messages', requireAuth, async (req, res, next) => {
       ? { ...listing.rows[0], photos: listing.rows[0].cover_photo ? [listing.rows[0].cover_photo] : [] }
       : null;
     res.json({
-      // At-rest şifrelemeyi çöz — eski plaintext mesajlar etkilenmez
       messages: messageCrypto.decryptRows(rows, 'content'),
       conversation: { id: c.id, buyer_id: c.buyer_id, seller_id: c.seller_id },
       other: otherPayload,
-      // Bakan kullanıcı da hayaletse ve bu chat'te henüz mesaj yazmadıysa,
-      // frontend "cevap yazarsan kimliğin iletilir" uyarısı göster
-      show_ghost_warning: isOtherGhost, // karşı taraf hayalet, senin uyarı görmen gerek
+      // Karşı taraf hayalet + ben henüz cevap yazmadım → o gizli, bilgi banner göster
+      show_ghost_warning: isOtherGhost,
+      // BEN hayalet + henüz mesaj yazmadım → cevap yazarsam kimliğim iletilir → uyarı
+      show_self_ghost_warning: showSelfGhostWarning,
       listing: listingData,
     });
   } catch (err) {

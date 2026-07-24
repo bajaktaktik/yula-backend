@@ -775,6 +775,8 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       params.push(req.body.restrictedToGender || null);
       updates.push(`restricted_to_gender = $${params.length}`);
     }
+    // Bu request'te ilan yeni pending oldu mu? (admin bildirimi için)
+    let becamePending = false;
     if (req.body.ghostMode !== undefined) {
       const newGhost = !!req.body.ghostMode;
       const cur = await client.query(
@@ -788,13 +790,12 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
       updates.push(`ghost_mode = $${params.length}`);
 
       if (!prevGhost && newGhost) {
-        // false → true: yeni onay bekle
         updates.push(`ghost_approval_status = 'pending'`);
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
         updates.push(`ghost_approval_at = NULL`);
+        becamePending = true;
       } else if (prevGhost && !newGhost) {
-        // true → false: hayalet kapatıldı, onay bilgilerini temizle
         updates.push(`ghost_approval_status = NULL`);
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
@@ -805,8 +806,8 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
         updates.push(`ghost_approval_reason = NULL`);
         updates.push(`ghost_approved_by = NULL`);
         updates.push(`ghost_approval_at = NULL`);
+        becamePending = true;
       }
-      // Diğer durumlar (pending kal, approved kal): dokunma
     }
 
     if (updates.length > 0) {
@@ -857,6 +858,36 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     }
 
     await client.query('COMMIT');
+
+    // Hayalet pending yeni oldu → adminlere push (arka planda)
+    if (becamePending) {
+      (async () => {
+        try {
+          const { sendToAllAdmins } = require('../services/push');
+          const uRes = await pool.query(
+            `SELECT REGEXP_REPLACE(COALESCE(display_name, ''), '^\\[DEMO\\] ', '') AS name
+             FROM users WHERE id = $1`,
+            [req.userId]
+          );
+          const senderName = uRes.rows[0]?.name || 'Bir kullanıcı';
+          await sendToAllAdmins(
+            {
+              title: '👻 Hayalet İlan Onay Bekliyor (Yeniden Gönderildi)',
+              body: `${senderName}: ${rows[0].title}`,
+              data: {
+                type: 'admin_new_ghost',
+                listing_id: req.params.id,
+                user_id: req.userId,
+              },
+            },
+            req.userId
+          );
+        } catch (e) {
+          console.warn('[listings PATCH] admin ghost notify fail:', e.message);
+        }
+      })();
+    }
+
     res.json({ listing: rows[0] });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
