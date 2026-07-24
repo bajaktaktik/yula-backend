@@ -23,6 +23,7 @@ const createSchema = Joi.object({
   photoThumbs: Joi.array().items(Joi.string()).max(8).default([]),
   restrictedToGender: Joi.string().valid('female', 'male').allow(null).optional(),
   isNegotiable: Joi.boolean().default(false),
+  ghostMode: Joi.boolean().default(false), // ilan-bazlı hayalet — kullanıcı normal olsa da bu ilan hayalet
 });
 
 // Kullanıcının cinsiyetini DB'den çek (route handler'lar için yardımcı)
@@ -241,6 +242,7 @@ router.get('/', requireAuth, async (req, res, next) => {
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
              u.ghost_mode AS seller_ghost_mode,
+             l.ghost_mode AS listing_ghost_mode,
              -- Liste kartı için tek foto: cover (ilk) thumbnail
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              -- Auto-loop için tüm foto thumbnails (max 8, base64 değil thumbnail URL)
@@ -263,8 +265,8 @@ router.get('/', requireAuth, async (req, res, next) => {
       const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
       const tier = tierInfo.tier;
       const isSecond = tier === 2;
-      // HAYALET: satıcı hayalet moddaysa VE bakan kişi kendisi değilse → ad/avatar gizle
-      const isGhost = !!row.seller_ghost_mode && String(row.user_id) !== String(req.userId);
+      // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → gizle
+      const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
       return {
         ...row,
         degree: tier,
@@ -378,6 +380,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
              u.ghost_mode AS seller_ghost_mode,
+             l.ghost_mode AS listing_ghost_mode,
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              -- Vitrin auto-loop için tüm foto thumbnails (10 tane sınır)
              (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering)
@@ -530,8 +533,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     const shareViews = Number(listing.share_views || 0);
     const totalViews = appViews + shareViews;
 
-    // HAYALET: satıcı hayaletse (ve bakan kendisi değilse) ad/avatar gizle
-    const isGhost = !!listing.seller_ghost_mode && !isOwn;
+    // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse
+    const isGhost = !!(listing.seller_ghost_mode || listing.ghost_mode) && !isOwn;
 
     res.json({
       ...listing,
@@ -603,9 +606,9 @@ router.post('/', requireAuth, async (req, res, next) => {
     let ins;
     try {
       ins = await client.query(
-        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey]
+        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key, ghost_mode)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey, !!value.ghostMode]
       );
     } catch (dbErr) {
       // 23505 = unique_violation — race condition: aynı key paralel geldi
@@ -736,6 +739,10 @@ router.patch('/:id', requireAuth, async (req, res, next) => {
     if (req.body.restrictedToGender !== undefined) {
       params.push(req.body.restrictedToGender || null);
       updates.push(`restricted_to_gender = $${params.length}`);
+    }
+    if (req.body.ghostMode !== undefined) {
+      params.push(!!req.body.ghostMode);
+      updates.push(`ghost_mode = $${params.length}`);
     }
 
     if (updates.length > 0) {

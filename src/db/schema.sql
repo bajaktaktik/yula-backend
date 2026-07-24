@@ -141,6 +141,10 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_at TIMESTAMPTZ;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS admin_removed_reason TEXT;
 -- Admin öne çıkarma — bu tarih geçince otomatik normal ilan
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS featured_until TIMESTAMPTZ;
+-- İlan bazlı hayalet modu: kullanıcı normal olsa bile tek ilan için hayalet olarak yayınlanabilir.
+-- Feed'de OR mantığı: (user.ghost_mode OR listings.ghost_mode) → is_ghost
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS ghost_mode BOOLEAN NOT NULL DEFAULT false;
+
 -- Idempotency — timeout/retry durumunda duplicate ilan önle
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_listings_idem_user
