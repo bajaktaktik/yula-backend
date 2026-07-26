@@ -409,32 +409,41 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
         AND l.admin_removed_at IS NULL
         AND l.created_at >= now() - ($2 || ' hours')::interval
         AND ${genderFilter(myGender)}
+        -- Hayalet onay filtresi: pending hayalet ilanlar Vitrin'de de görünmez.
+        AND (l.ghost_mode = false OR l.ghost_approval_status = 'approved')
         ${freeOnly ? 'AND (l.price = 0 OR l.is_negotiable = TRUE)' : ''}
         ${includeHidden ? '' : 'AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $3)'}
       ORDER BY l.created_at DESC
     `;
     const { rows } = await pool.query(sql, [ids, hours, req.userId]);
 
-    const result = rows.map((row) => {
-      const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
-      const tier = tierInfo.tier;
-      const isSecond = tier === 2;
-      return {
-        ...row,
-        degree: tier,
-        tier,
-        seller_name: isSecond ? null : row.seller_name,
-        seller_avatar: isSecond ? null : row.seller_avatar,
-        via_user_id: isSecond ? tierInfo.via_user_id : null,
-        via_name: isSecond ? tierInfo.via_name : null,
-        mutual_count: isSecond ? tierInfo.mutual_count : null,
-        // Auto-loop için tüm foto'lar; boş ise cover ile fallback
-        photos: (row.all_photos && row.all_photos.length > 0)
-          ? row.all_photos
-          : (row.cover_photo ? [row.cover_photo] : []),
-        photo_count: row.photo_count || 0,
-      };
-    });
+    const result = rows
+      .map((row) => {
+        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
+        const tier = tierInfo.tier;
+        const isSecond = tier === 2;
+        // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → kimlik gizle
+        const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
+        return {
+          ...row,
+          degree: tier,
+          tier,
+          seller_name: (isSecond || isGhost) ? null : row.seller_name,
+          seller_avatar: (isSecond || isGhost) ? null : row.seller_avatar,
+          is_ghost: isGhost,
+          via_user_id: isSecond ? tierInfo.via_user_id : null,
+          via_name: isSecond ? tierInfo.via_name : null,
+          mutual_count: isSecond ? tierInfo.mutual_count : null,
+          // Auto-loop için tüm foto'lar; boş ise cover ile fallback
+          photos: (row.all_photos && row.all_photos.length > 0)
+            ? row.all_photos
+            : (row.cover_photo ? [row.cover_photo] : []),
+          photo_count: row.photo_count || 0,
+        };
+      })
+      // 2. derece + KULLANICI hayalet → hariç (ana feed ile tutarlı)
+      // İlan hayalet (kullanıcı normal) 2. derecede görünür — via aracılığıyla mesajlaşma OK
+      .filter((r) => !(r.tier === 2 && !!r.seller_ghost_mode));
 
     res.json({ listings: result, count: result.length, hours });
   } catch (err) {
