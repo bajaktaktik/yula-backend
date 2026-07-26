@@ -404,6 +404,16 @@ CREATE TABLE IF NOT EXISTS device_tokens (
   PRIMARY KEY (user_id, token)
 );
 
+-- Site sayaclari (website ziyaretci vs.)
+-- Basit key-value counter. IP dedupe in-memory (backend server.js).
+CREATE TABLE IF NOT EXISTS site_counters (
+  key        TEXT PRIMARY KEY,
+  value      BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO site_counters (key, value) VALUES ('total_visitors', 0)
+  ON CONFLICT (key) DO NOTHING;
+
 -- =====================================================================
 -- Seed kategoriler (sahibinden.com tarzı, 2 seviyeli hiyerarsi)
 -- =====================================================================

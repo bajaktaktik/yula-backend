@@ -79,7 +79,10 @@ app.get('/public/stats', async (req, res) => {
            SELECT 1 FROM users u WHERE u.phone_hash = uc.contact_phone_hash AND u.status = 'active'
          )) AS potential,
         -- Toplam aktif ilan
-        (SELECT COUNT(*)::int FROM listings WHERE status = 'active') AS listings
+        (SELECT COUNT(*)::int FROM listings WHERE status = 'active') AS listings,
+        -- Website toplam ziyaretci (24 saat IP dedupe)
+        -- ::int cast şart — bigint node-pg'de string döner, frontend guard reddeder
+        COALESCE((SELECT value FROM site_counters WHERE key = 'total_visitors'), 0)::int AS visitors
     `);
     publicStatsCache = { data: r.rows[0], ts: Date.now() };
     // 5 dk client-side cache
@@ -90,6 +93,50 @@ app.get('/public/stats', async (req, res) => {
     // Hata durumunda son cache dön (varsa) — website hero'da hiç sayı olmasın diye
     if (publicStatsCache.data) return res.json(publicStatsCache.data);
     res.status(503).json({ error: 'stats_unavailable' });
+  }
+});
+
+// Website ziyaretci sayaci — POST /public/visit
+// - IP + user-agent hash ile 24 saat in-memory dedupe (aynı ziyaretçi bir kez sayılır)
+// - site_counters.total_visitors atomik increment
+// - /public/stats cache invalidate → yeni sayı bir sonraki fetch'te görünür
+const crypto = require('crypto');
+const visitorDedupeCache = new Map(); // ipHash -> timestamp
+const VISITOR_DEDUPE_TTL = 24 * 60 * 60 * 1000; // 24 saat
+
+// Saatte bir eski entry'leri temizle (bellek şişmesin)
+setInterval(() => {
+  const cutoff = Date.now() - VISITOR_DEDUPE_TTL;
+  for (const [key, ts] of visitorDedupeCache.entries()) {
+    if (ts < cutoff) visitorDedupeCache.delete(key);
+  }
+}, 60 * 60 * 1000).unref();
+
+app.post('/public/visit', async (req, res) => {
+  try {
+    const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+    const ua = req.get('user-agent') || '';
+    const ipHash = crypto.createHash('sha256').update(ip + '|' + ua).digest('hex');
+
+    const last = visitorDedupeCache.get(ipHash);
+    if (last && Date.now() - last < VISITOR_DEDUPE_TTL) {
+      // 24 saat içinde tekrar geldiyse sayma
+      return res.json({ ok: true, deduped: true });
+    }
+    visitorDedupeCache.set(ipHash, Date.now());
+
+    await pool.query(
+      `INSERT INTO site_counters (key, value) VALUES ('total_visitors', 1)
+       ON CONFLICT (key) DO UPDATE SET value = site_counters.value + 1, updated_at = now()`
+    );
+
+    // Cache invalidate — bir sonraki /public/stats güncel sayı çeksin
+    publicStatsCache.ts = 0;
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[public/visit] fail:', err.message);
+    res.status(500).json({ error: 'visit_track_failed' });
   }
 });
 
