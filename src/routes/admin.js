@@ -1345,14 +1345,31 @@ router.get('/system/r2-stats', requireAuth, requireAdmin, async (req, res, next)
 // GHOST APPROVALS — Hayalet ilan onay kuyruğu
 // ═══════════════════════════════════════════════════════════════════
 
-// GET /admin/ghost-approvals — bekleyen hayalet ilanlar
+// GET /admin/ghost-approvals?status=pending|approved|rejected|all — hayalet ilanlar
+// Default pending (aksiyon gerektiren). Panel'den filtre chip'i ile diğer durumlar sorgulanır.
+// Sayaç her durum için ayrı döner → panel'de "Onay bekleyen: X | Aktif: Y | Reddedilen: Z" gösterilebilir.
 router.get('/ghost-approvals', requireAuth, requireAdmin, async (req, res, next) => {
   try {
+    const status = (req.query.status || 'pending').toString();
+    const allowed = new Set(['pending', 'approved', 'rejected', 'all']);
+    if (!allowed.has(status)) {
+      return res.status(400).json({ error: 'invalid_status' });
+    }
+
+    let statusFilter = '';
+    if (status === 'pending') statusFilter = "AND l.ghost_approval_status = 'pending'";
+    else if (status === 'approved') statusFilter = "AND l.ghost_approval_status = 'approved'";
+    else if (status === 'rejected') statusFilter = "AND l.ghost_approval_status = 'rejected'";
+    // 'all' → filter yok, tüm hayalet ilanlar
+
     const { rows } = await pool.query(
       `SELECT
          l.id, l.title, l.description, l.price, l.currency,
          l.location_city, l.created_at,
          l.user_id,
+         l.ghost_approval_status,
+         l.ghost_approval_reason,
+         l.ghost_approval_at,
          u.display_name AS user_name,
          u.avatar_url AS user_avatar,
          (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
@@ -1361,12 +1378,36 @@ router.get('/ghost-approvals', requireAuth, requireAdmin, async (req, res, next)
        FROM listings l
        JOIN users u ON u.id = l.user_id
        LEFT JOIN categories c ON c.id = l.category_id
-       WHERE l.ghost_approval_status = 'pending'
+       WHERE l.ghost_mode = true
          AND l.status = 'active'
          AND l.admin_removed_at IS NULL
-       ORDER BY l.created_at ASC`
+         ${statusFilter}
+       ORDER BY
+         CASE l.ghost_approval_status
+           WHEN 'pending' THEN 1
+           WHEN 'approved' THEN 2
+           WHEN 'rejected' THEN 3
+         END,
+         l.created_at DESC`
     );
-    res.json({ ghost_approvals: rows, count: rows.length });
+
+    // Her durum için sayaç — panel filtre chip'leri güncel gösterir
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE ghost_approval_status = 'pending')::int  AS pending,
+         COUNT(*) FILTER (WHERE ghost_approval_status = 'approved')::int AS approved,
+         COUNT(*) FILTER (WHERE ghost_approval_status = 'rejected')::int AS rejected,
+         COUNT(*)::int                                                    AS all
+       FROM listings
+       WHERE ghost_mode = true AND status = 'active' AND admin_removed_at IS NULL`
+    );
+
+    res.json({
+      ghost_approvals: rows,
+      count: rows.length,
+      status,
+      counts: counts.rows[0],
+    });
   } catch (err) {
     next(err);
   }

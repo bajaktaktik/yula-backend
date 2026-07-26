@@ -3189,31 +3189,33 @@ function renderReports() { return reportsView(); }
 // ═══════════════════════════════════════════════════════════════
 // İki alt-sekme: (1) onay bekleyen hayalet ilanlar, (2) user-level hayalet kullanıcılar
 let _ghostSubTab = 'listings'; // 'listings' | 'users'
+let _ghostListingStatus = 'pending'; // 'pending' | 'approved' | 'rejected' | 'all'
 
 async function renderGhosts() {
   const c = document.getElementById('content');
   c.innerHTML = '<div class="p-16 flex justify-center"><div class="spinner"></div></div>';
   try {
-    // İki endpoint paralel çek
+    // İki endpoint paralel çek (ilan status'u seçilen chip'e göre)
     const [approvals, users] = await Promise.all([
-      apiJson('/admin/ghost-approvals').catch(() => ({ ghost_approvals: [] })),
+      apiJson('/admin/ghost-approvals?status=' + _ghostListingStatus).catch(() => ({ ghost_approvals: [], counts: { pending: 0, approved: 0, rejected: 0, all: 0 } })),
       apiJson('/admin/ghost-users').catch(() => ({ ghost_users: [] })),
     ]);
     const listings = approvals.ghost_approvals || [];
+    const counts = approvals.counts || { pending: 0, approved: 0, rejected: 0, all: 0 };
     const ghostUsers = users.ghost_users || [];
 
-    // Sidebar badge — sadece onay bekleyen ilan sayısı (aksiyon gerektiren)
+    // Sidebar badge — sadece onay bekleyen (aksiyon gerektiren)
     const badge = document.getElementById('ghosts-badge');
     if (badge) {
-      if (listings.length > 0) {
-        badge.textContent = listings.length;
+      if (counts.pending > 0) {
+        badge.textContent = counts.pending;
         badge.classList.remove('hidden');
       } else {
         badge.classList.add('hidden');
       }
     }
 
-    // İki tab üst şerit
+    // İki üst tab
     c.innerHTML = `
       <div class="mb-4 border-b border-slate-200 flex gap-1">
         <button
@@ -3222,8 +3224,8 @@ async function renderGhosts() {
             ? 'text-purple-700 border-b-2 border-purple-600'
             : 'text-slate-500 hover:text-slate-700'}">
           📦 Hayalet İlanlar
-          ${listings.length > 0
-            ? `<span class="ml-1.5 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-bold text-white bg-red-500 rounded-full">${listings.length}</span>`
+          ${counts.pending > 0
+            ? `<span class="ml-1.5 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-bold text-white bg-red-500 rounded-full">${counts.pending}</span>`
             : ''}
         </button>
         <button
@@ -3241,7 +3243,7 @@ async function renderGhosts() {
     `;
 
     if (_ghostSubTab === 'listings') {
-      renderGhostListingsSection(listings);
+      renderGhostListingsSection(listings, counts);
     } else {
       renderGhostUsersSection(ghostUsers);
     }
@@ -3255,22 +3257,61 @@ function setGhostSubTab(tab) {
   renderGhosts();
 }
 
-function renderGhostListingsSection(items) {
+function setGhostListingStatus(status) {
+  _ghostListingStatus = status;
+  renderGhosts();
+}
+
+function ghostStatusBadge(status) {
+  if (status === 'pending') return '<span class="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-bold uppercase">Onay Bekliyor</span>';
+  if (status === 'approved') return '<span class="text-[10px] bg-green-100 text-green-800 px-1.5 py-0.5 rounded font-bold uppercase">Aktif Yayında</span>';
+  if (status === 'rejected') return '<span class="text-[10px] bg-red-100 text-red-800 px-1.5 py-0.5 rounded font-bold uppercase">Reddedildi</span>';
+  return '';
+}
+
+function renderGhostListingsSection(items, counts) {
   const sub = document.getElementById('ghost-subcontent');
+  counts = counts || { pending: 0, approved: 0, rejected: 0, all: 0 };
+
+  // Filtre chip'leri (her zaman göster, sayıları güncel)
+  const chip = (key, label, count, activeColor) => {
+    const isActive = _ghostListingStatus === key;
+    return `
+      <button
+        onclick="setGhostListingStatus('${key}')"
+        class="px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${
+          isActive
+            ? activeColor + ' text-white'
+            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+        }">
+        ${label} <span class="ml-1 opacity-80">${count}</span>
+      </button>
+    `;
+  };
+
+  let chipsHtml = `
+    <div class="mb-4 flex flex-wrap gap-2">
+      ${chip('pending', '⏳ Onay Bekleyen', counts.pending, 'bg-yellow-500')}
+      ${chip('approved', '✓ Aktif Yayında', counts.approved, 'bg-green-600')}
+      ${chip('rejected', '✗ Reddedilen', counts.rejected, 'bg-red-600')}
+      ${chip('all', '🌐 Tümü', counts.all, 'bg-slate-700')}
+    </div>
+  `;
+
   if (items.length === 0) {
-    sub.innerHTML = `
+    sub.innerHTML = chipsHtml + `
       <div class="p-16 text-center text-slate-500">
         <div class="text-5xl mb-3">👻</div>
-        <div class="text-lg font-semibold">Bekleyen hayalet ilan yok</div>
-        <div class="text-sm mt-2">Yeni bir hayalet ilan yayınlandığında burada görünür.</div>
+        <div class="text-lg font-semibold">Bu durumda ilan yok</div>
+        <div class="text-sm mt-2">Başka bir filtre seçebilirsin.</div>
       </div>
     `;
     return;
   }
-  sub.innerHTML = `
-    <div class="mb-4 text-sm text-slate-600">
-      <strong>${items.length}</strong> ilan hayalet olarak yayınlanmayı bekliyor.
-      İçeriği inceleyip onayla veya reddet.
+
+  sub.innerHTML = chipsHtml + `
+    <div class="mb-3 text-sm text-slate-600">
+      <strong>${items.length}</strong> ilan listeleniyor.
     </div>
     <div class="space-y-3">
       ${items.map(l => `
@@ -3282,7 +3323,10 @@ function renderGhostListingsSection(items) {
           <div class="flex-1 min-w-0">
             <div class="flex items-start justify-between gap-2 mb-1">
               <div class="min-w-0">
-                <div class="font-bold text-slate-900 truncate">${escapeHtml(l.title)}</div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <div class="font-bold text-slate-900 truncate">${escapeHtml(l.title)}</div>
+                  ${ghostStatusBadge(l.ghost_approval_status)}
+                </div>
                 <div class="text-xs text-slate-500 mt-0.5">
                   ${escapeHtml(l.user_name || 'Kullanıcı')} · ${escapeHtml(l.category_name || '—')} · ${escapeHtml(l.location_city || '—')}
                 </div>
@@ -3293,17 +3337,39 @@ function renderGhostListingsSection(items) {
               </div>
             </div>
             <div class="text-sm text-slate-700 mt-2 line-clamp-2">${escapeHtml(l.description || '(açıklama yok)')}</div>
-            <div class="flex gap-2 mt-3">
-              <button
-                onclick="ghostApprove('${l.id}')"
-                class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">
-                ✓ Onayla
-              </button>
-              <button
-                onclick="ghostReject('${l.id}')"
-                class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">
-                ✗ Reddet
-              </button>
+            ${l.ghost_approval_status === 'rejected' && l.ghost_approval_reason
+              ? `<div class="mt-2 text-xs bg-red-50 border-l-2 border-red-400 pl-2 py-1 text-red-800">
+                   <strong>Red sebebi:</strong> ${escapeHtml(l.ghost_approval_reason)}
+                 </div>`
+              : ''
+            }
+            <div class="flex gap-2 mt-3 flex-wrap">
+              ${l.ghost_approval_status === 'pending' ? `
+                <button
+                  onclick="ghostApprove('${l.id}')"
+                  class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">
+                  ✓ Onayla
+                </button>
+                <button
+                  onclick="ghostReject('${l.id}')"
+                  class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">
+                  ✗ Reddet
+                </button>
+              ` : ''}
+              ${l.ghost_approval_status === 'approved' ? `
+                <button
+                  onclick="ghostReject('${l.id}')"
+                  class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">
+                  ⚠️ Onayı Kaldır
+                </button>
+              ` : ''}
+              ${l.ghost_approval_status === 'rejected' ? `
+                <button
+                  onclick="ghostApprove('${l.id}')"
+                  class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">
+                  ✓ Tekrar Onayla
+                </button>
+              ` : ''}
               <button
                 onclick="openListing('${l.id}')"
                 class="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded">
