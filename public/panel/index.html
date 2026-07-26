@@ -3185,88 +3185,183 @@ function renderUsers() { return usersView(); }
 function renderReports() { return reportsView(); }
 
 // ═══════════════════════════════════════════════════════════════
-// Hayalet İlan Onayı
+// Hayalet İlan Onayı + Hayalet Kullanıcılar
 // ═══════════════════════════════════════════════════════════════
+// İki alt-sekme: (1) onay bekleyen hayalet ilanlar, (2) user-level hayalet kullanıcılar
+let _ghostSubTab = 'listings'; // 'listings' | 'users'
+
 async function renderGhosts() {
   const c = document.getElementById('content');
   c.innerHTML = '<div class="p-16 flex justify-center"><div class="spinner"></div></div>';
   try {
-    const d = await apiJson('/admin/ghost-approvals');
-    const items = d.ghost_approvals || [];
+    // İki endpoint paralel çek
+    const [approvals, users] = await Promise.all([
+      apiJson('/admin/ghost-approvals').catch(() => ({ ghost_approvals: [] })),
+      apiJson('/admin/ghost-users').catch(() => ({ ghost_users: [] })),
+    ]);
+    const listings = approvals.ghost_approvals || [];
+    const ghostUsers = users.ghost_users || [];
 
-    // Sidebar badge güncelle
+    // Sidebar badge — sadece onay bekleyen ilan sayısı (aksiyon gerektiren)
     const badge = document.getElementById('ghosts-badge');
     if (badge) {
-      if (items.length > 0) {
-        badge.textContent = items.length;
+      if (listings.length > 0) {
+        badge.textContent = listings.length;
         badge.classList.remove('hidden');
       } else {
         badge.classList.add('hidden');
       }
     }
 
-    if (items.length === 0) {
-      c.innerHTML = `
-        <div class="p-16 text-center text-slate-500">
-          <div class="text-5xl mb-3">👻</div>
-          <div class="text-lg font-semibold">Bekleyen hayalet ilan yok</div>
-          <div class="text-sm mt-2">Yeni bir hayalet ilan yayınlandığında burada görünür.</div>
-        </div>
-      `;
-      return;
-    }
-
+    // İki tab üst şerit
     c.innerHTML = `
-      <div class="mb-4 text-sm text-slate-600">
-        <strong>${items.length}</strong> ilan hayalet olarak yayınlanmayı bekliyor.
-        İçeriği inceleyip onayla veya reddet.
+      <div class="mb-4 border-b border-slate-200 flex gap-1">
+        <button
+          onclick="setGhostSubTab('listings')"
+          class="px-4 py-2 text-sm font-semibold ${_ghostSubTab === 'listings'
+            ? 'text-purple-700 border-b-2 border-purple-600'
+            : 'text-slate-500 hover:text-slate-700'}">
+          📦 Hayalet İlanlar
+          ${listings.length > 0
+            ? `<span class="ml-1.5 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-bold text-white bg-red-500 rounded-full">${listings.length}</span>`
+            : ''}
+        </button>
+        <button
+          onclick="setGhostSubTab('users')"
+          class="px-4 py-2 text-sm font-semibold ${_ghostSubTab === 'users'
+            ? 'text-purple-700 border-b-2 border-purple-600'
+            : 'text-slate-500 hover:text-slate-700'}">
+          👤 Hayalet Kullanıcılar
+          ${ghostUsers.length > 0
+            ? `<span class="ml-1.5 inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-bold text-slate-600 bg-slate-200 rounded-full">${ghostUsers.length}</span>`
+            : ''}
+        </button>
       </div>
-      <div class="space-y-3">
-        ${items.map(l => `
-          <div class="bg-white border border-purple-200 rounded-lg p-4 flex gap-4" id="ghost-${l.id}">
-            ${l.cover_photo
-              ? `<img src="${l.cover_photo}" class="w-24 h-24 object-cover rounded-lg flex-shrink-0" />`
-              : `<div class="w-24 h-24 bg-slate-100 rounded-lg flex items-center justify-center text-slate-400 flex-shrink-0">📦</div>`
-            }
-            <div class="flex-1 min-w-0">
-              <div class="flex items-start justify-between gap-2 mb-1">
-                <div class="min-w-0">
-                  <div class="font-bold text-slate-900 truncate">${escapeHtml(l.title)}</div>
-                  <div class="text-xs text-slate-500 mt-0.5">
-                    ${escapeHtml(l.user_name || 'Kullanıcı')} · ${escapeHtml(l.category_name || '—')} · ${escapeHtml(l.location_city || '—')}
-                  </div>
-                </div>
-                <div class="text-right flex-shrink-0">
-                  <div class="text-lg font-bold text-blue-700">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
-                  <div class="text-xs text-slate-400">${new Date(l.created_at).toLocaleString('tr-TR')}</div>
-                </div>
-              </div>
-              <div class="text-sm text-slate-700 mt-2 line-clamp-2">${escapeHtml(l.description || '(açıklama yok)')}</div>
-              <div class="flex gap-2 mt-3">
-                <button
-                  onclick="ghostApprove('${l.id}')"
-                  class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">
-                  ✓ Onayla
-                </button>
-                <button
-                  onclick="ghostReject('${l.id}')"
-                  class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">
-                  ✗ Reddet
-                </button>
-                <button
-                  onclick="openListing('${l.id}')"
-                  class="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded">
-                  🔍 Detay
-                </button>
-              </div>
-            </div>
-          </div>
-        `).join('')}
-      </div>
+      <div id="ghost-subcontent"></div>
     `;
+
+    if (_ghostSubTab === 'listings') {
+      renderGhostListingsSection(listings);
+    } else {
+      renderGhostUsersSection(ghostUsers);
+    }
   } catch (err) {
     c.innerHTML = '<div class="text-red-600 p-4">Yüklenemedi: ' + err.message + '</div>';
   }
+}
+
+function setGhostSubTab(tab) {
+  _ghostSubTab = tab;
+  renderGhosts();
+}
+
+function renderGhostListingsSection(items) {
+  const sub = document.getElementById('ghost-subcontent');
+  if (items.length === 0) {
+    sub.innerHTML = `
+      <div class="p-16 text-center text-slate-500">
+        <div class="text-5xl mb-3">👻</div>
+        <div class="text-lg font-semibold">Bekleyen hayalet ilan yok</div>
+        <div class="text-sm mt-2">Yeni bir hayalet ilan yayınlandığında burada görünür.</div>
+      </div>
+    `;
+    return;
+  }
+  sub.innerHTML = `
+    <div class="mb-4 text-sm text-slate-600">
+      <strong>${items.length}</strong> ilan hayalet olarak yayınlanmayı bekliyor.
+      İçeriği inceleyip onayla veya reddet.
+    </div>
+    <div class="space-y-3">
+      ${items.map(l => `
+        <div class="bg-white border border-purple-200 rounded-lg p-4 flex gap-4" id="ghost-${l.id}">
+          ${l.cover_photo
+            ? `<img src="${l.cover_photo}" class="w-24 h-24 object-cover rounded-lg flex-shrink-0" />`
+            : `<div class="w-24 h-24 bg-slate-100 rounded-lg flex items-center justify-center text-slate-400 flex-shrink-0">📦</div>`
+          }
+          <div class="flex-1 min-w-0">
+            <div class="flex items-start justify-between gap-2 mb-1">
+              <div class="min-w-0">
+                <div class="font-bold text-slate-900 truncate">${escapeHtml(l.title)}</div>
+                <div class="text-xs text-slate-500 mt-0.5">
+                  ${escapeHtml(l.user_name || 'Kullanıcı')} · ${escapeHtml(l.category_name || '—')} · ${escapeHtml(l.location_city || '—')}
+                </div>
+              </div>
+              <div class="text-right flex-shrink-0">
+                <div class="text-lg font-bold text-blue-700">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
+                <div class="text-xs text-slate-400">${new Date(l.created_at).toLocaleString('tr-TR')}</div>
+              </div>
+            </div>
+            <div class="text-sm text-slate-700 mt-2 line-clamp-2">${escapeHtml(l.description || '(açıklama yok)')}</div>
+            <div class="flex gap-2 mt-3">
+              <button
+                onclick="ghostApprove('${l.id}')"
+                class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">
+                ✓ Onayla
+              </button>
+              <button
+                onclick="ghostReject('${l.id}')"
+                class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">
+                ✗ Reddet
+              </button>
+              <button
+                onclick="openListing('${l.id}')"
+                class="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-semibold rounded">
+                🔍 Detay
+              </button>
+            </div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderGhostUsersSection(users) {
+  const sub = document.getElementById('ghost-subcontent');
+  if (users.length === 0) {
+    sub.innerHTML = `
+      <div class="p-16 text-center text-slate-500">
+        <div class="text-5xl mb-3">👤</div>
+        <div class="text-lg font-semibold">Hayalet moddaki kullanıcı yok</div>
+        <div class="text-sm mt-2">Bir kullanıcı hayalet modunu aktif ettiğinde burada görünür.</div>
+      </div>
+    `;
+    return;
+  }
+  sub.innerHTML = `
+    <div class="mb-4 text-sm text-slate-600">
+      <strong>${users.length}</strong> kullanıcı hayalet modu aktif — tüm ilanları rehberlerinden gizli.
+      Aksiyon gerektirmez, sadece bilgilendirme.
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      ${users.map(u => `
+        <div class="bg-white border border-slate-200 rounded-lg p-4 flex gap-3">
+          ${u.avatar_url
+            ? `<img src="${u.avatar_url}" class="w-12 h-12 rounded-full object-cover flex-shrink-0" />`
+            : `<div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center text-lg flex-shrink-0">👤</div>`
+          }
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-slate-900 truncate">${escapeHtml(u.display_name || 'İsimsiz')}</span>
+              <span class="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-bold uppercase">👻 Hayalet</span>
+            </div>
+            <div class="text-xs text-slate-500 mt-1">
+              ${escapeHtml(u.location_city || '—')} · ${u.gender === 'male' ? 'Erkek' : u.gender === 'female' ? 'Kadın' : '—'}
+            </div>
+            <div class="flex gap-3 mt-2 text-xs">
+              <span class="text-slate-600"><strong class="text-slate-800">${u.active_listings || 0}</strong> aktif ilan</span>
+              <span class="text-slate-500"><strong>${u.sold_listings || 0}</strong> satılan</span>
+            </div>
+            <div class="text-[10px] text-slate-400 mt-1">
+              Kayıt: ${new Date(u.created_at).toLocaleDateString('tr-TR')}
+              ${u.last_listing_at ? ` · Son ilan: ${new Date(u.last_listing_at).toLocaleDateString('tr-TR')}` : ''}
+            </div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
 }
 
 async function ghostApprove(id) {

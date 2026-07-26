@@ -1372,6 +1372,30 @@ router.get('/ghost-approvals', requireAuth, requireAdmin, async (req, res, next)
   }
 });
 
+// GET /admin/ghost-users — user-level hayalet moddaki kullanıcıların listesi
+// İlan sayısı, kayıt tarihi, son aktivite ile birlikte. Sadece bilgilendirme, aksiyon yok.
+router.get('/ghost-users', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         u.id, u.display_name, u.avatar_url, u.location_city, u.created_at,
+         u.gender, u.status,
+         (SELECT COUNT(*)::int FROM listings l
+          WHERE l.user_id = u.id AND l.status = 'active' AND l.admin_removed_at IS NULL) AS active_listings,
+         (SELECT COUNT(*)::int FROM listings l
+          WHERE l.user_id = u.id AND l.status = 'sold') AS sold_listings,
+         (SELECT MAX(l.created_at) FROM listings l WHERE l.user_id = u.id) AS last_listing_at
+       FROM users u
+       WHERE u.ghost_mode = true
+         AND u.status = 'active'
+       ORDER BY last_listing_at DESC NULLS LAST, u.created_at DESC`
+    );
+    res.json({ ghost_users: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /admin/ghost-approvals/:id/approve
 router.post('/ghost-approvals/:id/approve', requireAuth, requireAdmin, async (req, res, next) => {
   try {
