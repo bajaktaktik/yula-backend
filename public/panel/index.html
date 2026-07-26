@@ -2976,10 +2976,16 @@ async function loadSystemSentry() {
     const data = await apiJson('/admin/system/sentry-summary');
     if (!data.configured) {
       c.innerHTML = `
-        <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-6">
-          <div class="text-lg font-bold text-yellow-900 mb-2">⚠️ Sentry entegrasyonu yok</div>
-          <div class="text-sm text-yellow-800">${data.message || 'Env değişkenleri eksik.'}</div>
-          <div class="text-xs text-yellow-700 mt-4 font-mono bg-yellow-100 p-3 rounded">
+        <div class="bg-slate-50 border border-slate-200 rounded-xl p-6">
+          <div class="text-lg font-bold text-slate-800 mb-2">📱 Sentry — sadece mobile'da aktif</div>
+          <div class="text-sm text-slate-700 leading-relaxed">
+            Mobile uygulaması crash'leri Sentry'ye düşer (EAS'te <code class="text-xs bg-slate-200 px-1 rounded">SENTRY_AUTH_TOKEN</code> ekli).
+            Backend Sentry entegrasyonu şimdilik ertelendi; ihtiyaç doğduğunda eklenecek.
+          </div>
+          <div class="text-xs text-slate-500 mt-4">
+            Backend entegrasyonu için gereken env değişkenleri (şu an gerekmiyor):
+          </div>
+          <div class="text-xs text-slate-600 mt-2 font-mono bg-slate-100 p-3 rounded">
             SENTRY_AUTH_TOKEN=<token><br />
             SENTRY_ORG=<organization-slug><br />
             SENTRY_PROJECT=<project-slug>
