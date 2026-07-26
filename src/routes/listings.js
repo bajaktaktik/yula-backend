@@ -287,11 +287,10 @@ router.get('/', requireAuth, async (req, res, next) => {
           photo_count: row.photo_count || 0,
         };
       })
-      // 2. derece + KULLANICI hayalet birleşimi anlamsız (satıcı kimliği tamamen anonim →
-      // 2. derecede zaten via aracı gösterilir, hayalet olunca via'ya da güvenilemez, iletişim güç).
-      // İlan hayalet (kullanıcı normal) ise 2. derecede görünür — kullanıcı kimliği bilinir,
-      // via aracılığıyla mesajlaşma normal işler, sadece ilan sayfasında "👻 Hayalet" gösterilir.
-      .filter((r) => !(r.tier === 2 && !!r.seller_ghost_mode));
+      // Hayalet ilanlar 2. derecede de görünür — sadece kimlik gizli (seller_name/avatar null,
+      // is_ghost=true). Via aracı gösterilir, via zaten hayalet DEĞİL (graph.js'te filtreli),
+      // yani üzerinden iletişim mümkün. Filter yok.
+      ;
 
     // Sold ilan tracking — bu feed'de görülen sold ilanları kaydet
     // İkinci gösterime kadar 24 saat sayacı başlar. Sadece bu kullanıcı için.
@@ -441,9 +440,8 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
           photo_count: row.photo_count || 0,
         };
       })
-      // 2. derece + KULLANICI hayalet → hariç (ana feed ile tutarlı)
-      // İlan hayalet (kullanıcı normal) 2. derecede görünür — via aracılığıyla mesajlaşma OK
-      .filter((r) => !(r.tier === 2 && !!r.seller_ghost_mode));
+      // Hayalet ilanlar 2. derecede de görünür — sadece kimlik gizli. Ana feed ile tutarlı.
+      ;
 
     res.json({ listings: result, count: result.length, hours });
   } catch (err) {
@@ -563,12 +561,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 
     // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse
     const isGhost = !!(listing.seller_ghost_mode || listing.ghost_mode) && !isOwn;
-
-    // 2. derece + KULLANICI hayalet — 404 (feed'den de hariç, tutarlı).
-    // İlan hayalet (kullanıcı normal) + 2. derece → normal detay, sadece is_ghost=true UI'da 👻 gösterir.
-    if (isSecond && !!listing.seller_ghost_mode && !isOwn) {
-      return res.status(404).json({ error: 'not_found' });
-    }
+    // 2. derece + hayalet detay: normal aç, sadece kimlik gizli (is_ghost=true).
+    // Via aracılığıyla mesajlaşma frontend'de çalışır.
 
     res.json({
       ...listing,
