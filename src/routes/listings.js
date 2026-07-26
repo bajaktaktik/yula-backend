@@ -287,9 +287,11 @@ router.get('/', requireAuth, async (req, res, next) => {
           photo_count: row.photo_count || 0,
         };
       })
-      // 2. derece + hayalet birleşimi anlamsız (satıcı anonim + ilan anonim → iletişim güç)
-      // → feed'den hariç tut
-      .filter((r) => !(r.tier === 2 && r.is_ghost));
+      // 2. derece + KULLANICI hayalet birleşimi anlamsız (satıcı kimliği tamamen anonim →
+      // 2. derecede zaten via aracı gösterilir, hayalet olunca via'ya da güvenilemez, iletişim güç).
+      // İlan hayalet (kullanıcı normal) ise 2. derecede görünür — kullanıcı kimliği bilinir,
+      // via aracılığıyla mesajlaşma normal işler, sadece ilan sayfasında "👻 Hayalet" gösterilir.
+      .filter((r) => !(r.tier === 2 && !!r.seller_ghost_mode));
 
     // Sold ilan tracking — bu feed'de görülen sold ilanları kaydet
     // İkinci gösterime kadar 24 saat sayacı başlar. Sadece bu kullanıcı için.
@@ -553,8 +555,9 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse
     const isGhost = !!(listing.seller_ghost_mode || listing.ghost_mode) && !isOwn;
 
-    // 2. derece + hayalet — anlamsız birleşim, 404 dön
-    if (isSecond && isGhost) {
+    // 2. derece + KULLANICI hayalet — 404 (feed'den de hariç, tutarlı).
+    // İlan hayalet (kullanıcı normal) + 2. derece → normal detay, sadece is_ghost=true UI'da 👻 gösterir.
+    if (isSecond && !!listing.seller_ghost_mode && !isOwn) {
       return res.status(404).json({ error: 'not_found' });
     }
 
