@@ -73,23 +73,11 @@ router.post('/', requireAuth, async (req, res, next) => {
     const { value, error } = createSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
-    // ⚡ FAST PATH — mevcut sohbet varsa doğrudan döndür.
-    // Network + graph + block kontrolü daha önce bu conversation açılırken yapılmış zaten.
-    // Kullanıcı ilan detayından "Mesaj"a bastığında %90 durumda buraya girer.
-    // İki türlü mevcut olabilir: (buyer=me) veya (seller=me), listing_id ile.
-    if (!value.intermediaryId) {
-      const fastCheck = await pool.query(
-        `SELECT id, listing_id
-         FROM conversations
-         WHERE listing_id = $1 AND (buyer_id = $2 OR seller_id = $2)
-         ORDER BY last_message_at DESC NULLS LAST
-         LIMIT 1`,
-        [value.listingId, req.userId]
-      );
-      if (fastCheck.rows.length > 0) {
-        return res.json({ conversation: fastCheck.rows[0] });
-      }
-    }
+    // NOT: Eskiden burada bir "fast-path" vardı — listing_id + (buyer_id=me OR seller_id=me)
+    // ile ilk conversation'ı döndürüyordu. AMA seller_id kontrolü yoktu, o yüzden geçmişte
+    // 2. derece via ile açılan bir chat, sonradan 1. dereceye geçmiş bir kullanıcı için de
+    // match ediyor ve "yanlış kullanıcı ile chat" bug'ına sebep oluyordu.
+    // Çıkarıldı — aşağıdaki `existingRes` sorgusu chatTargetId ile doğru kontrolü zaten yapıyor.
 
     // 1. Listing fetch
     const lres = await pool.query('SELECT id, user_id FROM listings WHERE id = $1', [value.listingId]);
