@@ -109,6 +109,34 @@ router.get('/', requireAuth, async (req, res, next) => {
         });
       }
     }
+    // İLET (Forward) — 1. derecedeki tanıdıkların forward ettiği ilanlar
+    // Bunlar user_id filtresine takılmayabilir (3. derece ilan olabilir), o yüzden
+    // ayrı bir listing_id filter'ı ile OR bağlanacak.
+    // Map: listing_id → { forwarder_id, forwarder_name, forwarded_at }
+    const forwardMap = new Map();
+    if (visible.size > 0) {
+      const visibleIdsArr = Array.from(visible.keys());
+      const { rows: fwdRows } = await pool.query(
+        `SELECT DISTINCT ON (lf.listing_id)
+           lf.listing_id, lf.forwarder_id, lf.created_at,
+           COALESCE(uc.contact_name, u.display_name, 'Kullanıcı') AS forwarder_name
+         FROM listing_forwards lf
+         JOIN users u ON u.id = lf.forwarder_id
+         LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
+         WHERE lf.forwarder_id = ANY($2::uuid[])
+         ORDER BY lf.listing_id, lf.created_at DESC`,
+        [req.userId, visibleIdsArr]
+      );
+      for (const r of fwdRows) {
+        forwardMap.set(String(r.listing_id), {
+          forwarder_id: r.forwarder_id,
+          forwarder_name: r.forwarder_name,
+          forwarded_at: r.created_at,
+        });
+      }
+    }
+    const forwardedListingIds = Array.from(forwardMap.keys());
+
     const ids = Array.from(tierMap.keys());
     const myGender = await getMyGender(req.userId);
     const limit = Math.min(parseInt(req.query.limit || '30', 10), 100);
@@ -138,8 +166,12 @@ router.get('/', requireAuth, async (req, res, next) => {
     };
     const orderBySql = orderMap[sortBy] || orderMap.newest;
 
+    // Filter: kullanıcının network'ündeki (1.+2. derece) veya 1. derecesinin forward ettiği ilanlar
+    // $1 = user_ids (network), $2 = forwarded listing_ids
     const filters = [
-      'l.user_id = ANY($1::uuid[])',
+      forwardedListingIds.length > 0
+        ? '(l.user_id = ANY($1::uuid[]) OR l.id = ANY($2::uuid[]))'
+        : 'l.user_id = ANY($1::uuid[])',
       // Aktif ilanlar HER ZAMAN gösterilir.
       // Sold ilanlar özel koşulla: max 7 gün, ve bu kullanıcı için 24 saatte tek gösterim.
       `(
@@ -166,6 +198,9 @@ router.get('/', requireAuth, async (req, res, next) => {
       `l.user_id <> '${req.userId}'`,
     ];
     const params = [ids];
+    if (forwardedListingIds.length > 0) {
+      params.push(forwardedListingIds);
+    }
 
     // Tarih filtresi (ana akış için son N gün)
     if (days) {
@@ -266,11 +301,17 @@ router.get('/', requireAuth, async (req, res, next) => {
 
     const result = rows
       .map((row) => {
-        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
-        const tier = tierInfo.tier;
+        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 2 };
+        let tier = tierInfo.tier;
         const isSecond = tier === 2;
         // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → gizle
         const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
+
+        // İLET — bu ilan 1. derecemdeki biri tarafından iletildi mi?
+        // Öncelik forward > native tier (forward daha yakın etkileşim).
+        const fwd = forwardMap.get(String(row.id));
+        const isForwarded = !!fwd && !isGhost;  // hayaletler zaten forward edilemez ama güvenlik ağı
+
         return {
           ...row,
           degree: tier,
@@ -281,6 +322,11 @@ router.get('/', requireAuth, async (req, res, next) => {
           via_user_id: isSecond ? tierInfo.via_user_id : null,
           via_name: isSecond ? tierInfo.via_name : null,
           mutual_count: isSecond ? tierInfo.mutual_count : null,
+          // İLET bilgileri — frontend "İLETİ" etiketi ve "Ali iletti" için
+          is_forwarded: isForwarded,
+          forwarded_by_user_id: isForwarded ? fwd.forwarder_id : null,
+          forwarded_by_name: isForwarded ? fwd.forwarder_name : null,
+          forwarded_at: isForwarded ? fwd.forwarded_at : null,
           photos: (row.all_photos && row.all_photos.length > 0)
             ? row.all_photos
             : (row.cover_photo ? [row.cover_photo] : []),
@@ -449,6 +495,75 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
   }
 });
 
+// POST /listings/:id/forward — 2. derece ilanı kendi çevremize ilet
+// Kısıtlar:
+//   - İlan var + aktif
+//   - Kullanıcının kendi ilanı DEĞİL
+//   - Hayalet DEĞİL (ilan-level VE kullanıcı-level)
+//   - Kullanıcı için tier=2 (1. derece zaten görüyor, ilet mantıksız)
+// UNIQUE(listing_id, forwarder_id) — aynı kullanıcı aynı ilanı iki kez iletemez (idempotent).
+router.post('/:id/forward', requireAuth, async (req, res, next) => {
+  try {
+    const listingId = req.params.id;
+
+    const lres = await pool.query(
+      `SELECT l.id, l.user_id, l.status, l.admin_removed_at,
+              l.ghost_mode AS listing_ghost, u.ghost_mode AS user_ghost
+       FROM listings l JOIN users u ON u.id = l.user_id
+       WHERE l.id = $1`,
+      [listingId]
+    );
+    if (lres.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
+    const l = lres.rows[0];
+
+    if (l.status !== 'active' || l.admin_removed_at) {
+      return res.status(400).json({ error: 'listing_not_active' });
+    }
+    if (l.user_id === req.userId) {
+      return res.status(400).json({ error: 'cannot_forward_own_listing' });
+    }
+    if (l.listing_ghost || l.user_ghost) {
+      return res.status(400).json({ error: 'cannot_forward_ghost' });
+    }
+
+    // tier kontrolü — 1. derecede ise ilet gerekmez (zaten görüyor)
+    const visible = await graph.getVisibleUserIds(req.userId);
+    if (visible.has(String(l.user_id))) {
+      return res.status(400).json({ error: 'first_degree_no_forward' });
+    }
+    const secondMap = await graph.getSecondDegreeMap(req.userId);
+    if (!secondMap.has(String(l.user_id))) {
+      return res.status(400).json({ error: 'not_in_your_network' });
+    }
+
+    // Idempotent insert — aynı forward tekrar POST edilirse sessizce OK.
+    const ins = await pool.query(
+      `INSERT INTO listing_forwards (listing_id, forwarder_id)
+       VALUES ($1, $2)
+       ON CONFLICT (listing_id, forwarder_id) DO NOTHING
+       RETURNING id, created_at`,
+      [listingId, req.userId]
+    );
+
+    res.json({ ok: true, already: ins.rowCount === 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /listings/:id/forward — iletim geri al
+router.delete('/:id/forward', requireAuth, async (req, res, next) => {
+  try {
+    await pool.query(
+      'DELETE FROM listing_forwards WHERE listing_id = $1 AND forwarder_id = $2',
+      [req.params.id, req.userId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /listings/:id/intermediaries — 2. derece ilanı için aracıların listesi
 // Kullanıcı hangi tanıdığından bilgi sormak istediğini seçer.
 router.get('/:id/intermediaries', requireAuth, async (req, res, next) => {
@@ -518,6 +633,28 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     let tier = isOwn ? 0 : (inFirstDegree ? 1 : null);
     let viaInfo = null;
 
+    // Bu ilan bir 1. derecemdeki tanıdık tarafından forward edilmiş mi?
+    // Öyleyse ilanı görebilirim (3. derece olsa bile), tier=2 gibi göster + is_forwarded=true
+    let forwardInfo = null;
+    if (!isOwn) {
+      const visibleIdsArr = Array.from(visible.keys());
+      if (visibleIdsArr.length > 0) {
+        const fres = await pool.query(
+          `SELECT lf.forwarder_id, lf.created_at,
+                  COALESCE(uc.contact_name, u.display_name, 'Kullanıcı') AS forwarder_name
+           FROM listing_forwards lf
+           JOIN users u ON u.id = lf.forwarder_id
+           LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
+           WHERE lf.listing_id = $2 AND lf.forwarder_id = ANY($3::uuid[])
+           ORDER BY lf.created_at DESC LIMIT 1`,
+          [req.userId, req.params.id, visibleIdsArr]
+        );
+        if (fres.rows.length > 0) {
+          forwardInfo = fres.rows[0];
+        }
+      }
+    }
+
     // 2. derece kontrolü — sadece ilk kontrolde bulunamazsa gönder
     if (!isOwn && !inFirstDegree) {
       const secondMap = await graph.getSecondDegreeMap(req.userId);
@@ -525,12 +662,23 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       if (info) {
         tier = 2;
         viaInfo = info;
+      } else if (forwardInfo) {
+        // 2. derecemde değil ama 1. derece tanıdık forward etmiş — göster (tier=2 gibi)
+        tier = 2;
+        viaInfo = {
+          via_user_id: forwardInfo.forwarder_id,
+          via_name: forwardInfo.forwarder_name,
+          mutual_count: 1,
+        };
       } else {
         return res.status(403).json({ error: 'not_in_your_network' });
       }
     }
 
     const isSecond = tier === 2;
+    // İlet edilebilir mi kontrolü — sadece tier=2 + hayalet değil + kendisi değil
+    // Bu bilgi UI'da "İlet" butonunu göstermek için kullanılır.
+    // Kullanıcı zaten iletti mi? — canForward=true ama alreadyForwarded=true ise UI "İletildi ✓" yapabilir.
 
     // View sayacı — UNIQUE user bazında. Aynı kişi defalarca açsa 1 kez sayılır.
     // Sahibi hariç. Async: response'u geciktirmez.
@@ -564,6 +712,17 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     // 2. derece + hayalet detay: normal aç, sadece kimlik gizli (is_ghost=true).
     // Via aracılığıyla mesajlaşma frontend'de çalışır.
 
+    // İlet edilebilir mi + kullanıcı zaten iletmiş mi?
+    const canForward = isSecond && !isGhost && !isOwn;
+    let alreadyForwardedByMe = false;
+    if (canForward) {
+      const chk = await pool.query(
+        'SELECT 1 FROM listing_forwards WHERE listing_id = $1 AND forwarder_id = $2 LIMIT 1',
+        [req.params.id, req.userId]
+      );
+      alreadyForwardedByMe = chk.rowCount > 0;
+    }
+
     res.json({
       ...listing,
       // 2. derece için gerçek isim gizli, hayalet için de
@@ -584,6 +743,13 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       view_count: appViews,       // uygulama içi
       share_views: shareViews,     // dış paylaşım linki tıklamaları
       total_views: totalViews,     // toplam (bu request sayılmadan önce; UI için önemli değil)
+      // İLET (Forward) bilgileri
+      is_forwarded: !!forwardInfo,
+      forwarded_by_user_id: forwardInfo?.forwarder_id || null,
+      forwarded_by_name: forwardInfo?.forwarder_name || null,
+      forwarded_at: forwardInfo?.created_at || null,
+      can_forward: canForward,
+      already_forwarded_by_me: alreadyForwardedByMe,
     });
   } catch (err) {
     next(err);

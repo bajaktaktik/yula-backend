@@ -404,6 +404,19 @@ CREATE TABLE IF NOT EXISTS device_tokens (
   PRIMARY KEY (user_id, token)
 );
 
+-- İLET (Forward) — kullanıcı 2. derece bir ilanı "kendi çevresine" iletebilir.
+-- Aynı ilan aynı kullanıcı tarafından tek kez iletilir (UNIQUE). Silme cascade.
+-- Ilet kısıtları backend'de: sadece tier=2, hayalet olmayan ilanlar iletilebilir.
+CREATE TABLE IF NOT EXISTS listing_forwards (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id   UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  forwarder_id UUID NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(listing_id, forwarder_id)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_forwards_forwarder ON listing_forwards(forwarder_id);
+CREATE INDEX IF NOT EXISTS idx_listing_forwards_listing ON listing_forwards(listing_id);
+
 -- Site sayaclari (website ziyaretci vs.)
 -- Basit key-value counter. IP dedupe in-memory (backend server.js).
 CREATE TABLE IF NOT EXISTS site_counters (
