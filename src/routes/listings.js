@@ -419,6 +419,31 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       });
     }
     const ids = Array.from(tierMap.keys());
+
+    // İLET (Forward) — 1. derecedeki tanıdıkların iletmiş ilanları
+    const forwardMap = new Map();
+    if (visible.size > 0) {
+      const visibleIdsArr = Array.from(visible.keys());
+      const { rows: fwdRows } = await pool.query(
+        `SELECT DISTINCT ON (lf.listing_id)
+           lf.listing_id, lf.forwarder_id, lf.created_at,
+           COALESCE(uc.contact_name, u.display_name, 'Kullanıcı') AS forwarder_name
+         FROM listing_forwards lf
+         JOIN users u ON u.id = lf.forwarder_id
+         LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
+         WHERE lf.forwarder_id = ANY($2::uuid[])
+         ORDER BY lf.listing_id, lf.created_at DESC`,
+        [req.userId, visibleIdsArr]
+      );
+      for (const r of fwdRows) {
+        forwardMap.set(String(r.listing_id), {
+          forwarder_id: r.forwarder_id,
+          forwarder_name: r.forwarder_name,
+          forwarded_at: r.created_at,
+        });
+      }
+    }
+    const forwardedListingIds = Array.from(forwardMap.keys());
     // Vitrin zaman penceresi — client istediği kadar geriye bakabilir (max 1 yıl)
     // Default 720 saat (30 gün). Client 6 ay = 4320, tümü = 8760 (1 yıl) gönderebilir.
     const hours = Math.min(parseInt(req.query.hours || '720', 10), 8760);
@@ -448,7 +473,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       JOIN users u ON u.id = l.user_id
       LEFT JOIN categories c ON c.id = l.category_id
       LEFT JOIN user_contacts uc ON uc.user_id = $3 AND uc.contact_phone_hash = u.phone_hash
-      WHERE l.user_id = ANY($1::uuid[])
+      WHERE (l.user_id = ANY($1::uuid[]) OR l.id = ANY($4::uuid[]))
         AND l.user_id <> $3
         AND l.status = 'active'
         AND l.admin_removed_at IS NULL
@@ -460,15 +485,18 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
         ${includeHidden ? '' : 'AND l.id NOT IN (SELECT listing_id FROM hidden_listings WHERE user_id = $3)'}
       ORDER BY l.created_at DESC
     `;
-    const { rows } = await pool.query(sql, [ids, hours, req.userId]);
+    const { rows } = await pool.query(sql, [ids, hours, req.userId, forwardedListingIds]);
 
     const result = rows
       .map((row) => {
-        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 1 };
+        const tierInfo = tierMap.get(String(row.user_id)) || { tier: 2 };
         const tier = tierInfo.tier;
         const isSecond = tier === 2;
         // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → kimlik gizle
         const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
+        // İLET — bu ilan 1. derecemdeki biri tarafından iletildi mi?
+        const fwd = forwardMap.get(String(row.id));
+        const isForwarded = !!fwd && !isGhost;
         return {
           ...row,
           degree: tier,
@@ -479,6 +507,11 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
           via_user_id: isSecond ? tierInfo.via_user_id : null,
           via_name: isSecond ? tierInfo.via_name : null,
           mutual_count: isSecond ? tierInfo.mutual_count : null,
+          // İLET bilgileri
+          is_forwarded: isForwarded,
+          forwarded_by_user_id: isForwarded ? fwd.forwarder_id : null,
+          forwarded_by_name: isForwarded ? fwd.forwarder_name : null,
+          forwarded_at: isForwarded ? fwd.forwarded_at : null,
           // Auto-loop için tüm foto'lar; boş ise cover ile fallback
           photos: (row.all_photos && row.all_photos.length > 0)
             ? row.all_photos
