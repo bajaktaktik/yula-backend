@@ -124,6 +124,7 @@ router.get('/', requireAuth, async (req, res, next) => {
          JOIN users u ON u.id = lf.forwarder_id
          LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
          WHERE lf.forwarder_id = ANY($2::uuid[])
+           AND lf.forwarder_id <> $1  -- kendi forward'ı feed'de "İLETİ" olarak görünmesin (2. derece kalır)
          ORDER BY lf.listing_id, lf.created_at DESC`,
         [req.userId, visibleIdsArr]
       );
@@ -392,6 +393,44 @@ router.get('/mine', requireAuth, async (req, res, next) => {
   }
 });
 
+// GET /listings/my/forwards — kullanıcının ilettiği (forward ettiği) ilanlar.
+// MyListings 3. tab "İletilerim" bunu kullanır. Kaldırma DELETE /:id/forward ile.
+router.get('/my/forwards', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT l.id, l.title, l.description, l.price, l.currency,
+              l.location_city, l.location_district, l.created_at, l.status,
+              l.user_id AS original_user_id,
+              lf.created_at AS forwarded_at,
+              u.display_name AS seller_display_name,
+              COALESCE(uc.contact_name, u.display_name) AS seller_name,
+              u.avatar_url AS seller_avatar,
+              c.name AS category_name,
+              l.is_negotiable,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count
+       FROM listing_forwards lf
+       JOIN listings l ON l.id = lf.listing_id
+       JOIN users u ON u.id = l.user_id
+       LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
+       LEFT JOIN categories c ON c.id = l.category_id
+       WHERE lf.forwarder_id = $1
+         AND l.status = 'active'
+         AND l.admin_removed_at IS NULL
+       ORDER BY lf.created_at DESC`,
+      [req.userId]
+    );
+    const result = rows.map((r) => ({
+      ...r,
+      photos: r.cover_photo ? [r.cover_photo] : [],
+      photo_count: r.photo_count || 0,
+    }));
+    res.json({ forwards: result, count: result.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /listings/garage-sale  →  Vitrin sekmesi: son N gün ilanları (default 30 gün, max 30 gün)
 // Reels-style görüntüleme akışı. Daha geniş pencere → boş ekran azalır.
 router.get('/garage-sale', requireAuth, async (req, res, next) => {
@@ -432,6 +471,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
          JOIN users u ON u.id = lf.forwarder_id
          LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
          WHERE lf.forwarder_id = ANY($2::uuid[])
+           AND lf.forwarder_id <> $1  -- kendi forward'ı feed'de "İLETİ" olarak görünmesin (2. derece kalır)
          ORDER BY lf.listing_id, lf.created_at DESC`,
         [req.userId, visibleIdsArr]
       );
