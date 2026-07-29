@@ -309,9 +309,11 @@ router.get('/', requireAuth, async (req, res, next) => {
         const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
 
         // İLET — bu ilan 1. derecemdeki biri tarafından iletildi mi?
-        // Öncelik forward > native tier (forward daha yakın etkileşim).
+        // Öncelik: 1. derece (kendi tanıdığı) > forward > 2. derece.
+        // Yani zaten kendi tanıdığımın ilanıysa (tier=1) forward olarak GÖSTERME —
+        // "İLETİ" etiketi yerine normal tanıdık ismi kalsın.
         const fwd = forwardMap.get(String(row.id));
-        const isForwarded = !!fwd && !isGhost;  // hayaletler zaten forward edilemez ama güvenlik ağı
+        const isForwarded = !!fwd && !isGhost && tier !== 1;  // hayaletler zaten forward edilemez ama güvenlik ağı
 
         return {
           ...row,
@@ -535,8 +537,10 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
         // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → kimlik gizle
         const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
         // İLET — bu ilan 1. derecemdeki biri tarafından iletildi mi?
+        // Öncelik: 1. derece > forward > 2. derece.
+        // 1. derecede zaten görünüyor, "İLETİ" gereksiz.
         const fwd = forwardMap.get(String(row.id));
-        const isForwarded = !!fwd && !isGhost;
+        const isForwarded = !!fwd && !isGhost && tier !== 1;
         return {
           ...row,
           degree: tier,
@@ -816,11 +820,11 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       view_count: appViews,       // uygulama içi
       share_views: shareViews,     // dış paylaşım linki tıklamaları
       total_views: totalViews,     // toplam (bu request sayılmadan önce; UI için önemli değil)
-      // İLET (Forward) bilgileri
-      is_forwarded: !!forwardInfo,
-      forwarded_by_user_id: forwardInfo?.forwarder_id || null,
-      forwarded_by_name: forwardInfo?.forwarder_name || null,
-      forwarded_at: forwardInfo?.created_at || null,
+      // İLET (Forward) bilgileri — 1. derecede zaten görünür, "İLETİ" gösterme
+      is_forwarded: !!forwardInfo && tier !== 1,
+      forwarded_by_user_id: (!!forwardInfo && tier !== 1) ? forwardInfo.forwarder_id : null,
+      forwarded_by_name: (!!forwardInfo && tier !== 1) ? forwardInfo.forwarder_name : null,
+      forwarded_at: (!!forwardInfo && tier !== 1) ? forwardInfo.created_at : null,
       can_forward: canForward,
       already_forwarded_by_me: alreadyForwardedByMe,
     });
