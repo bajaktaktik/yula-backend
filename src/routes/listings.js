@@ -517,7 +517,12 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       LEFT JOIN user_contacts uc ON uc.user_id = $3 AND uc.contact_phone_hash = u.phone_hash
       WHERE (l.user_id = ANY($1::uuid[]) OR l.id = ANY($4::uuid[]))
         AND l.user_id <> $3
-        AND l.status = 'active'
+        -- Aktif ilanlar + son 7 gün içinde satılanlar (SATILDI etiketi ile görünür)
+        -- Ana feed ile tutarlı: kullanıcı "yeni satıldı" bilgisini de görebilsin
+        AND (
+          l.status = 'active'
+          OR (l.status = 'sold' AND l.sold_at IS NOT NULL AND l.sold_at > now() - interval '7 days')
+        )
         AND l.admin_removed_at IS NULL
         AND l.created_at >= now() - ($2 || ' hours')::interval
         AND ${genderFilter(myGender)}
