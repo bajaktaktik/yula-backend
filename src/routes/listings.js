@@ -498,6 +498,7 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
              l.location_city, l.location_district, l.created_at,
              l.category_id, c.name AS category_name,
              l.user_id,
+             l.status, l.sold_at,
              -- [DEMO] prefix'i (seed-listings.js'in eklediği) UI'da gözükmesin diye soyuluyor.
              REGEXP_REPLACE(COALESCE(uc.contact_name, u.display_name), '^\[DEMO\] ', '') AS seller_name,
              u.avatar_url AS seller_avatar,
