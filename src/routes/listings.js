@@ -622,6 +622,43 @@ router.post('/:id/forward', requireAuth, async (req, res, next) => {
       [listingId, req.userId]
     );
 
+    // İlan sahibine ANONİM bildirim — sadece ilk kez iletildiğinde.
+    // Forwarder kimliği asla payload'a KOYULMAZ. Bildirim tekrar POST'larda spam yollamaz.
+    if (ins.rowCount > 0) {
+      (async () => {
+        try {
+          const t = await pool.query('SELECT title FROM listings WHERE id = $1', [listingId]);
+          const listingTitle = t.rows[0]?.title || 'İlanınız';
+
+          // In-app notification (kayıt)
+          await pool.query(
+            `INSERT INTO notifications (user_id, type, payload, listing_id)
+             VALUES ($1, 'listing_forwarded', $2::jsonb, $3)`,
+            [l.user_id, JSON.stringify({
+              title: '📢 İlanınız iletildi',
+              body: 'Bir kullanıcı sizin ilanınızı kendi tanıdıklarına iletti.',
+              listing_title: listingTitle,
+              // NOT: forwarder_id/name burada YOK — kimlik gizli
+            }), listingId]
+          );
+
+          // Push notification
+          const { sendToUser } = require('../services/push');
+          await sendToUser(l.user_id, {
+            title: '📢 İlanınız iletildi',
+            body: `Bir kullanıcı "${listingTitle}" ilanınızı kendi tanıdıklarına iletti.`,
+            data: {
+              type: 'listing_forwarded',
+              listing_id: listingId,
+              // NOT: forwarder_id burada YOK
+            },
+          });
+        } catch (e) {
+          console.warn('[forward-notify] fail:', e.message);
+        }
+      })();
+    }
+
     res.json({ ok: true, already: ins.rowCount === 0 });
   } catch (err) {
     next(err);
