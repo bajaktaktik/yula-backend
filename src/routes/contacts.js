@@ -9,10 +9,11 @@ const router = express.Router();
 
 const syncSchema = Joi.object({
   // İstemci her bir rehber kişisi için { sha256, name } gönderir.
+  // name null/boş/uzun olabilir — Joi katı davranıp tüm sync'i 400 ile bozmasın.
   contacts: Joi.array().items(
     Joi.object({
       sha256: Joi.string().length(64).required(),
-      name: Joi.string().max(120).optional(),
+      name: Joi.string().allow(null, '').max(120).optional().truncate(true),
     })
   ).min(1).max(5000).required(),
   replace: Joi.boolean().default(true),
