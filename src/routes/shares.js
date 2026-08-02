@@ -152,7 +152,10 @@ router.get('/i/:token', async (req, res) => {
 });
 
 // GET /i/:token/cover — kapak fotoğrafını public HTTPS image olarak serve eder
-// WhatsApp/Facebook og:image bunu fetch edebilsin diye base64 data URL'i decode edip Image döner.
+// WhatsApp/Facebook og:image bunu fetch eder. Cache header ile 1 hafta CDN'de tutulur.
+// R2 URL'lerini redirect yerine PROXY ediyoruz — WhatsApp crawler 302'yi bazen takip etmiyor
+// ya da Content-Type header'ı olmadığı için preview göstermiyor. Proxy ile aynı origin'den
+// gelen binary + doğru Content-Type + Cache-Control garanti.
 router.get('/i/:token/cover', async (req, res) => {
   try {
     const r = await pool.query(
@@ -167,17 +170,40 @@ router.get('/i/:token/cover', async (req, res) => {
     if (r.rows.length === 0 || !r.rows[0].cover) return res.status(404).end();
     const cover = r.rows[0].cover;
 
-    // Base64 data URL ise (data:image/jpeg;base64,...) → decode + binary olarak dön
+    // Base64 data URL (eski kayıtlar) → decode + binary olarak dön
     const m = String(cover).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
     if (m) {
       const buffer = Buffer.from(m[2], 'base64');
       res.setHeader('Content-Type', m[1]);
-      res.setHeader('Cache-Control', 'public, max-age=604800, immutable'); // 1 hafta cache
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
       res.setHeader('Content-Length', buffer.length);
       return res.send(buffer);
     }
-    // Zaten HTTPS URL ise → 302 redirect
-    if (/^https?:\/\//i.test(cover)) return res.redirect(cover);
+
+    // HTTPS URL (R2/CDN) → PROXY: backend fetch edip binary olarak dön
+    // Redirect yerine proxy → WhatsApp Content-Type gördüğü için preview kesin çalışır
+    if (/^https?:\/\//i.test(cover)) {
+      try {
+        const upstream = await fetch(cover, {
+          headers: { 'User-Agent': 'Abadan/1.0 (share-cover-proxy)' },
+        });
+        if (!upstream.ok) {
+          console.warn('[/i/cover] upstream fetch fail', upstream.status, cover);
+          return res.status(502).end();
+        }
+        const contentType = upstream.headers.get('content-type') || 'image/jpeg';
+        const arrayBuf = await upstream.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+        res.setHeader('Content-Length', buffer.length);
+        return res.send(buffer);
+      } catch (fetchErr) {
+        console.error('[/i/cover] proxy fail', fetchErr.message);
+        // Fallback: redirect (proxy fail olursa en azından 302 dene)
+        return res.redirect(cover);
+      }
+    }
     return res.status(404).end();
   } catch (err) {
     console.error('[/i/:token/cover]', err.message);
