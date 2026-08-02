@@ -83,7 +83,9 @@ app.get('/public/stats', async (req, res) => {
         (SELECT COUNT(*)::int FROM listings WHERE status = 'active') AS listings,
         -- Website toplam ziyaretci (24 saat IP dedupe)
         -- ::int cast şart — bigint node-pg'de string döner, frontend guard reddeder
-        COALESCE((SELECT value FROM site_counters WHERE key = 'total_visitors'), 0)::int AS visitors
+        COALESCE((SELECT value FROM site_counters WHERE key = 'total_visitors'), 0)::int AS visitors,
+        -- Onaylı mağaza sayısı (henüz onaylanmamış olanlar dahil edilmez)
+        (SELECT COUNT(*)::int FROM stores WHERE is_admin_approved = true) AS stores
     `);
     publicStatsCache = { data: r.rows[0], ts: Date.now() };
     // 5 dk client-side cache
