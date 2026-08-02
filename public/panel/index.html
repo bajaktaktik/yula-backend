@@ -102,6 +102,10 @@
         <span>👻</span> Hayalet Onayı
         <span id="ghosts-badge" class="hidden ml-auto bg-purple-600 text-xs px-2 py-0.5 rounded-full">0</span>
       </button>
+      <button data-tab="stores" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>🏪</span> Mağazalar
+        <span id="stores-badge" class="hidden ml-auto bg-orange-500 text-xs px-2 py-0.5 rounded-full">0</span>
+      </button>
       <button data-tab="banned" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>🚫</span> Yasak Kelimeler
       </button>
@@ -313,6 +317,7 @@ function switchTab(tab) {
     requests: 'Matlub İstek Moderasyonu',
     reports: 'Şikayetler',
     ghosts: 'Hayalet Onayı',
+    stores: 'Mağazalar',
     banned: 'Yasak Kelimeler',
     system: 'Sistem İzleme',
     ops: 'Operasyon',
@@ -324,6 +329,7 @@ function switchTab(tab) {
   if (tab === 'requests') renderRequests();
   if (tab === 'reports') renderReports();
   if (tab === 'ghosts') renderGhosts();
+  if (tab === 'stores') renderStores();
   if (tab === 'banned') renderBanned();
   if (tab === 'system') renderSystem();
   if (tab === 'ops') renderOps();
@@ -3428,6 +3434,187 @@ function renderGhostUsersSection(users) {
       `).join('')}
     </div>
   `;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Mağazalar (Stores)
+// ═══════════════════════════════════════════════════════════════
+let _storeStatus = 'pending';
+
+async function renderStores() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="p-16 flex justify-center"><div class="spinner"></div></div>';
+  try {
+    const data = await apiJson('/admin/stores?status=' + _storeStatus);
+    const stores = data.stores || [];
+    const counts = data.counts || { pending: 0, approved: 0, rejected: 0, unverified: 0, all: 0 };
+
+    // Sidebar badge — pending onay bekleyen
+    const badge = document.getElementById('stores-badge');
+    if (badge) {
+      if (counts.pending > 0) {
+        badge.textContent = counts.pending;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+
+    const chip = (key, label, count, activeColor) => `
+      <button
+        onclick="setStoreStatus('${key}')"
+        class="px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${
+          _storeStatus === key ? activeColor + ' text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+        }">
+        ${label} <span class="ml-1 opacity-80">${count}</span>
+      </button>
+    `;
+
+    let html = `
+      <div class="mb-4 flex flex-wrap gap-2">
+        ${chip('pending', '⏳ Onay Bekleyen', counts.pending, 'bg-yellow-500')}
+        ${chip('approved', '✓ Onaylı', counts.approved, 'bg-green-600')}
+        ${chip('rejected', '✗ Reddedilen', counts.rejected, 'bg-red-600')}
+        ${chip('unverified', '📧 E-posta Doğrulanmamış', counts.unverified, 'bg-slate-500')}
+        ${chip('all', '🌐 Tümü', counts.all, 'bg-slate-700')}
+      </div>
+    `;
+
+    if (stores.length === 0) {
+      html += `
+        <div class="p-16 text-center text-slate-500">
+          <div class="text-5xl mb-3">🏪</div>
+          <div class="text-lg font-semibold">Bu durumda mağaza yok</div>
+          <div class="text-sm mt-2">Başka bir filtre seçebilirsin.</div>
+        </div>
+      `;
+      c.innerHTML = html;
+      return;
+    }
+
+    html += `
+      <div class="mb-3 text-sm text-slate-600">
+        <strong>${stores.length}</strong> mağaza listeleniyor.
+      </div>
+      <div class="space-y-3">
+        ${stores.map(s => storeStatusBadge(s) + storeCard(s)).join('')}
+      </div>
+    `;
+    c.innerHTML = html;
+  } catch (err) {
+    c.innerHTML = '<div class="text-red-600 p-4">Yüklenemedi: ' + err.message + '</div>';
+  }
+}
+
+function setStoreStatus(status) {
+  _storeStatus = status;
+  renderStores();
+}
+
+function storeStatusBadge(s) {
+  if (!s.is_email_verified) return '';  // badge kartın içinde
+  return '';
+}
+
+function storeCard(s) {
+  const initial = (s.name || '?').charAt(0).toUpperCase();
+  const statusChip = !s.is_email_verified
+    ? '<span class="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-bold uppercase">📧 Doğrulanmamış</span>'
+    : s.admin_rejection_reason
+      ? '<span class="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded font-bold uppercase">Reddedildi</span>'
+      : s.is_admin_approved
+        ? '<span class="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Aktif</span>'
+        : '<span class="text-[10px] bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded font-bold uppercase">Onay Bekliyor</span>';
+
+  return `
+    <div class="bg-white border border-orange-200 rounded-lg p-4">
+      <div class="flex items-start gap-4">
+        <div class="w-14 h-14 rounded-full bg-orange-100 flex items-center justify-center text-2xl font-bold text-orange-700 flex-shrink-0">
+          ${initial}
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <div class="font-bold text-slate-900 text-base truncate">${escapeHtml(s.name)}</div>
+            ${statusChip}
+          </div>
+          <div class="text-sm text-slate-600 mt-1">📧 ${escapeHtml(s.email)}</div>
+          <div class="text-xs text-slate-500 mt-1">
+            ${s.phone ? `📞 ${escapeHtml(s.phone)}` : ''}
+            ${s.location_city ? `  ·  📍 ${escapeHtml(s.location_city)}` : ''}
+          </div>
+          <div class="text-[11px] text-slate-400 mt-1">
+            Kayıt: ${new Date(s.created_at).toLocaleString('tr-TR')}
+            ${s.approved_at ? ` · Onay: ${new Date(s.approved_at).toLocaleString('tr-TR')}` : ''}
+          </div>
+          ${s.admin_rejection_reason ? `
+            <div class="mt-2 text-xs bg-red-50 border-l-2 border-red-400 pl-2 py-1 text-red-800">
+              <strong>Red sebebi:</strong> ${escapeHtml(s.admin_rejection_reason)}
+            </div>
+          ` : ''}
+          <div class="flex gap-2 mt-3 flex-wrap">
+            ${!s.is_admin_approved && s.is_email_verified && !s.admin_rejection_reason ? `
+              <button onclick="storeApprove('${s.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
+                ✓ Onayla
+              </button>
+              <button onclick="storeReject('${s.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
+                ✗ Reddet
+              </button>
+            ` : ''}
+            ${s.is_admin_approved ? `
+              <button onclick="storeReject('${s.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
+                ⚠️ Onayı Kaldır
+              </button>
+            ` : ''}
+            ${s.admin_rejection_reason ? `
+              <button onclick="storeApprove('${s.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
+                ✓ Tekrar Onayla
+              </button>
+            ` : ''}
+            <button onclick="storeDelete('${s.id}', '${escapeHtml(s.email)}')" class="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold rounded">
+              🗑 Sil
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function storeApprove(id) {
+  if (!confirm('Bu mağazayı onaylıyor musun? Onay maili gönderilecek.')) return;
+  try {
+    await apiJson(`/admin/stores/${id}/approve`, { method: 'POST' });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+async function storeReject(id) {
+  const reason = prompt('Red/kaldırma sebebi (mağazaya mail ile iletilir):');
+  if (!reason || reason.trim().length < 3) {
+    if (reason !== null) alert('En az 3 karakter olmalı.');
+    return;
+  }
+  try {
+    await apiJson(`/admin/stores/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+async function storeDelete(id, email) {
+  if (!confirm(`"${email}" mağazasını KALICI olarak silmek istediğinden emin misin?\n\nBu işlem geri alınamaz.`)) return;
+  try {
+    await apiJson(`/admin/stores/${id}`, { method: 'DELETE' });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
 }
 
 async function ghostApprove(id) {

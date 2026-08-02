@@ -404,6 +404,31 @@ CREATE TABLE IF NOT EXISTS device_tokens (
   PRIMARY KEY (user_id, token)
 );
 
+-- MAĞAZALAR (Stores) — kullanıcılardan tamamen ayrı bir varlık.
+-- Auth: email + bcrypt password (user'lardaki SMS+PIN'den bağımsız).
+-- Flow: register → email verify → admin approve → login yapabilir.
+-- Store JWT payload'da type='store' ile user JWT'sinden ayrılır.
+CREATE TABLE IF NOT EXISTS stores (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email                 TEXT NOT NULL UNIQUE,
+  password_hash         TEXT NOT NULL,
+  name                  TEXT NOT NULL,
+  phone                 TEXT,
+  location_city         TEXT,
+  is_email_verified     BOOLEAN NOT NULL DEFAULT false,
+  is_admin_approved     BOOLEAN NOT NULL DEFAULT false,
+  admin_rejection_reason TEXT,
+  verification_token    TEXT,
+  verification_sent_at  TIMESTAMPTZ,
+  approved_at           TIMESTAMPTZ,
+  approved_by           UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_stores_email ON stores(LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_stores_pending ON stores(is_email_verified, is_admin_approved) WHERE is_email_verified = true AND is_admin_approved = false;
+CREATE INDEX IF NOT EXISTS idx_stores_verification_token ON stores(verification_token) WHERE verification_token IS NOT NULL;
+
 -- İLET (Forward) — kullanıcı 2. derece bir ilanı "kendi çevresine" iletebilir.
 -- Aynı ilan aynı kullanıcı tarafından tek kez iletilir (UNIQUE). Silme cascade.
 -- Ilet kısıtları backend'de: sadece tier=2, hayalet olmayan ilanlar iletilebilir.

@@ -1622,6 +1622,137 @@ router.post('/create-demo-user', requireAuth, requireAdmin, async (req, res, nex
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// STORES — Mağaza onay kuyruğu
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/stores?status=pending|approved|rejected|unverified|all
+router.get('/stores', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const status = (req.query.status || 'pending').toString();
+    let where = '';
+    if (status === 'pending')     where = 'WHERE is_email_verified = true AND is_admin_approved = false AND admin_rejection_reason IS NULL';
+    else if (status === 'approved')   where = 'WHERE is_admin_approved = true';
+    else if (status === 'rejected')   where = 'WHERE admin_rejection_reason IS NOT NULL';
+    else if (status === 'unverified') where = 'WHERE is_email_verified = false';
+    // 'all' → where boş
+
+    const { rows } = await pool.query(
+      `SELECT id, email, name, phone, location_city,
+              is_email_verified, is_admin_approved, admin_rejection_reason,
+              verification_sent_at, approved_at, created_at
+       FROM stores
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT 200`
+    );
+
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE is_email_verified = true AND is_admin_approved = false AND admin_rejection_reason IS NULL)::int AS pending,
+         COUNT(*) FILTER (WHERE is_admin_approved = true)::int AS approved,
+         COUNT(*) FILTER (WHERE admin_rejection_reason IS NOT NULL)::int AS rejected,
+         COUNT(*) FILTER (WHERE is_email_verified = false)::int AS unverified,
+         COUNT(*)::int AS all
+       FROM stores`
+    );
+
+    res.json({ stores: rows, count: rows.length, status, counts: counts.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/stores/:id/approve
+router.post('/stores/:id/approve', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `UPDATE stores
+       SET is_admin_approved = true, approved_at = now(), approved_by = $2,
+           admin_rejection_reason = NULL, updated_at = now()
+       WHERE id = $1
+       RETURNING email, name`,
+      [req.params.id, req.userId]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    // Audit
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_approve', 'store', $2, NULL)`,
+      [req.userId, req.params.id]
+    ).catch(() => {});
+
+    // Onay maili
+    (async () => {
+      try {
+        const email = require('../services/email');
+        const STORE_FRONTEND_URL = process.env.STORE_FRONTEND_URL || 'https://magaza.abadan.com.tr';
+        await email.sendStoreApproved(r.rows[0].email, r.rows[0].name, STORE_FRONTEND_URL);
+      } catch (e) {
+        console.warn('[store-approve] mail fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/stores/:id/reject
+// Body: { reason: string }
+router.post('/stores/:id/reject', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const reason = (req.body?.reason || '').toString().trim();
+    if (reason.length < 3 || reason.length > 500) {
+      return res.status(400).json({ error: 'reason_required' });
+    }
+    const r = await pool.query(
+      `UPDATE stores
+       SET is_admin_approved = false, admin_rejection_reason = $2, updated_at = now()
+       WHERE id = $1
+       RETURNING email, name`,
+      [req.params.id, reason]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_reject', 'store', $2, $3)`,
+      [req.userId, req.params.id, reason]
+    ).catch(() => {});
+
+    (async () => {
+      try {
+        const email = require('../services/email');
+        await email.sendStoreRejected(r.rows[0].email, r.rows[0].name, reason);
+      } catch (e) {
+        console.warn('[store-reject] mail fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /admin/stores/:id — mağaza sil
+router.delete('/stores/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    await pool.query('DELETE FROM stores WHERE id = $1', [req.params.id]);
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_delete', 'store', $2, NULL)`,
+      [req.userId, req.params.id]
+    ).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // GROWTH — Share leaderboard
 // ═══════════════════════════════════════════════════════════════════
 

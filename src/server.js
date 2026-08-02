@@ -24,6 +24,7 @@ const adminRoutes = require('./routes/admin');
 const sharesRoutes = require('./routes/shares');
 const requestsRoutes = require('./routes/requests');
 const uploadsRoutes = require('./routes/uploads');
+const storesRoutes = require('./routes/stores');
 const { setupChat } = require('./sockets/chat');
 
 const app = express();
@@ -235,6 +236,7 @@ app.use('/blocks', blockRoutes);
 app.use('/admin', adminRoutes);
 app.use('/requests', requestsRoutes);
 app.use('/uploads', uploadsRoutes);
+app.use('/stores', storesRoutes);
 // Share endpoint'leri: /listings/:id/share (auth), /shares/:token (public), /i/:token (public HTML)
 app.use('/', sharesRoutes);
 
