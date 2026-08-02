@@ -242,7 +242,7 @@ async function sendStoreRejected(email, name, reason) {
           <b>Sebep:</b> ${escapeHtml(reason)}
         </p>
         <p style="margin:16px 0 0;color:#64748b;font-size:13px;">
-          Sorularınız için: bilgi@abadan.com.tr
+          Sorularınız için: destek@abadan.com.tr
         </p>
       </td></tr>
     </table>
