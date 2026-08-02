@@ -181,19 +181,18 @@ router.post('/login', async (req, res, next) => {
       });
     }
 
-    if (!s.is_admin_approved) {
-      if (s.admin_rejection_reason) {
-        return res.status(403).json({
-          error: 'account_rejected',
-          message: 'Başvurunuz onaylanmadı.',
-          reason: s.admin_rejection_reason,
-        });
-      }
+    // Red durumu — girişe izin YOK, sebep ile bildir
+    if (s.admin_rejection_reason) {
       return res.status(403).json({
-        error: 'pending_approval',
-        message: 'Hesabınız admin onayı bekliyor. Onay durumu e-posta ile bildirilecek.',
+        error: 'account_rejected',
+        message: 'Başvurunuz onaylanmadı.',
+        reason: s.admin_rejection_reason,
       });
     }
+
+    // PILOT dönemi — admin onayı bekleyen mağazalar da giriş yapabilir.
+    // Dashboard'da onay durumu banner ile gösterilir.
+    // İleride kısıtlamak istenirse: !s.is_admin_approved kontrolü buraya eklenir.
 
     // JWT — type='store' ile user JWT'sinden ayrılır
     const token = jwt.sign(

@@ -204,7 +204,7 @@ async function sendStoreApproved(email, name, loginUrl) {
         </p>
         <p style="margin:24px 0;text-align:center;">
           <a href="${loginUrl}" style="display:inline-block;background:#1F4E79;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:700;font-size:15px;">
-            Panele Giriş Yap
+            Mağaza Girişi
           </a>
         </p>
       </td></tr>
