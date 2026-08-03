@@ -501,6 +501,12 @@ CREATE INDEX IF NOT EXISTS idx_store_msg_unread ON store_messages(conversation_i
 -- Mağaza ana kategorisi (sektör) — Yeni İlan formunda default seçili gelir.
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS primary_category_id INT REFERENCES categories(id) ON DELETE SET NULL;
 
+-- Mağaza parola sıfırlama tokenı (unuttum akışı) — 1 saat geçerli.
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS password_reset_token   TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS password_reset_sent_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_stores_password_reset_token ON stores(password_reset_token)
+  WHERE password_reset_token IS NOT NULL;
+
 -- Mağaza e-posta değişim isteği — admin onayı gerekir.
 -- pending_email dolu ise admin panel'de görünür; onaylanınca stores.email = pending_email olur.
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS pending_email              TEXT;

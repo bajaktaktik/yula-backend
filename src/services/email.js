@@ -264,9 +264,66 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/**
+ * Mağaza parola sıfırlama linki maili.
+ */
+async function sendStorePasswordReset(email, name, resetUrl) {
+  const html = `
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8" /></head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f5;padding:30px 0;"><tr><td align="center">
+    <table width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+      <tr>
+        <td style="background:#1F4E79;padding:24px;text-align:center;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;">ABADAN</h1>
+          <p style="margin:6px 0 0;color:rgba(255,255,255,0.85);font-size:12px;">Mağaza Portalı — Parola Sıfırlama</p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:32px 28px;">
+          <h2 style="margin:0 0 12px;color:#0f172a;font-size:20px;">Merhaba ${escapeHtml(name)},</h2>
+          <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:22px;">
+            Abadan Mağaza hesabınız için parola sıfırlama isteği aldık.
+            Yeni parola belirlemek için aşağıdaki bağlantıya tıkla:
+          </p>
+          <p style="margin:24px 0;text-align:center;">
+            <a href="${resetUrl}"
+               style="display:inline-block;background:#1F4E79;color:#fff;text-decoration:none;
+                      padding:14px 32px;border-radius:8px;font-weight:700;font-size:15px;">
+              Yeni Parola Belirle
+            </a>
+          </p>
+          <p style="margin:16px 0 0;color:#64748b;font-size:13px;line-height:20px;">
+            Buton çalışmıyorsa şu bağlantıyı tarayıcına kopyala:<br />
+            <span style="color:#1F4E79;word-break:break-all;">${resetUrl}</span>
+          </p>
+          <p style="margin:24px 0 0;padding:14px;background:#fef3c7;border-left:3px solid #f59e0b;color:#78350f;font-size:13px;line-height:20px;">
+            <b>Güvenlik:</b> Bu bağlantı <b>1 saat geçerlidir</b>. Bu isteği <b>siz yapmadıysanız</b> görmezden gelebilirsiniz — hesabınızın parolası değişmez.
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:20px 28px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;">
+          <p style="margin:0;color:#94a3b8;font-size:12px;">Sorular için: destek@abadan.com.tr</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+
+  return sendEmail({
+    to: email,
+    subject: '[Abadan] Parola sıfırlama isteği',
+    html,
+    text: `Merhaba ${name},\n\nAbadan Mağaza hesabınız için parola sıfırlama linki:\n\n${resetUrl}\n\nBu link 1 saat geçerlidir. Siz istemediyseniz görmezden gelin.\n\n—\nAbadan`,
+  });
+}
+
 module.exports = {
   sendEmail,
   sendStoreVerification,
   sendStoreApproved,
   sendStoreRejected,
+  sendStorePasswordReset,
 };

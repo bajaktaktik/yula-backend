@@ -332,20 +332,16 @@ router.patch('/me', requireStoreAuth, async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
   try {
-    // Ana sayaçlar + görüntülenme + haftalık delta + satış cirosu — tek query
+    // Ana sayaçlar + görüntülenme + haftalık delta
+    // (satış/ciro alanları KALDIRILDI — site üzerinden satış yok, sadece iletişim)
     const stats = await pool.query(
       `SELECT
          COUNT(*) FILTER (WHERE status = 'active')::int   AS active_listings,
-         COUNT(*) FILTER (WHERE status = 'sold')::int     AS sold_listings,
          COUNT(*) FILTER (WHERE status = 'inactive')::int AS inactive_listings,
          COUNT(*)::int                                     AS total_listings,
-         COALESCE(SUM(view_count) FILTER (WHERE status IN ('active','sold')), 0)::int AS total_views,
-         COALESCE(SUM(price) FILTER (WHERE status = 'sold'), 0)::numeric AS total_revenue,
-         COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_last_7d,
-         COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days')::int AS new_last_30d,
-         COUNT(*) FILTER (WHERE sold_at >= now() - interval '30 days')::int AS sold_last_30d,
-         AVG(EXTRACT(EPOCH FROM (sold_at - created_at)) / 86400)
-           FILTER (WHERE status = 'sold' AND sold_at IS NOT NULL)::numeric(10,1) AS avg_days_to_sell
+         COALESCE(SUM(view_count) FILTER (WHERE status = 'active'), 0)::int AS total_views,
+         COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')::int  AS new_last_7d,
+         COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days')::int AS new_last_30d
        FROM store_listings
        WHERE store_id = $1 AND admin_removed_at IS NULL`,
       [req.storeId]
@@ -475,16 +471,12 @@ router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
     res.json({
       counts: {
         active: activeCount,
-        sold: s.sold_listings || 0,
         inactive: s.inactive_listings || 0,
         total: s.total_listings || 0,
         total_views: s.total_views || 0,
-        total_revenue: parseFloat(s.total_revenue || 0),
         avg_views_per_listing: avgViewsPerListing,
         new_last_7d: s.new_last_7d || 0,
         new_last_30d: s.new_last_30d || 0,
-        sold_last_30d: s.sold_last_30d || 0,
-        avg_days_to_sell: s.avg_days_to_sell ? parseFloat(s.avg_days_to_sell) : null,
         unread_messages: unread.rows[0].unread_messages || 0,
         total_conversations: convStats.rows[0].total_conversations || 0,
         unique_customers: convStats.rows[0].unique_customers || 0,
@@ -718,6 +710,116 @@ router.patch('/me/listings/:id', requireStoreAuth, async (req, res, next) => {
     if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
     res.json({ ok: true, listing: r.rows[0] });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// PAROLAMI UNUTTUM — email ile reset linki
+// Auth gerekmez. Rate-limit: bir email için 5 istekten fazla 1 saatte spam sayılır.
+// ═══════════════════════════════════════════════════════════
+
+const forgotSchema = Joi.object({
+  email: Joi.string().email().lowercase().trim().required(),
+});
+
+// POST /stores/password-reset-request
+// Güvenlik notu: email var/yok bilgisini SIZDIRMAZ — her durumda ok:true döner.
+// (attacker email keşfi yapmasın)
+router.post('/password-reset-request', async (req, res, next) => {
+  try {
+    const { value, error } = forgotSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const r = await pool.query(
+      `SELECT id, email, name FROM stores
+       WHERE LOWER(email) = LOWER($1)
+         AND deleted_at IS NULL
+         AND is_email_verified = true`,
+      [value.email]
+    );
+
+    // Kayıt varsa token üret + mail gönder. Yoksa sessizce ok dön (email enum guard).
+    if (r.rows.length > 0) {
+      const store = r.rows[0];
+      const token = crypto.randomBytes(32).toString('hex');
+      await pool.query(
+        `UPDATE stores
+         SET password_reset_token = $1, password_reset_sent_at = now()
+         WHERE id = $2`,
+        [token, store.id]
+      );
+      const resetUrl = `${STORE_FRONTEND_URL}/reset.html?token=${token}`;
+      email.sendStorePasswordReset(store.email, store.name, resetUrl).catch((e) =>
+        console.warn('[password-reset] mail fail:', e.message)
+      );
+      console.log(`[password-reset-request] store=${store.id} email=${store.email}`);
+    } else {
+      // Yine de küçük gecikme — timing attack önlemi
+      await new Promise((r) => setTimeout(r, 400));
+      console.log(`[password-reset-request] unknown email=${value.email}`);
+    }
+
+    // HER DURUMDA aynı response — email enum önlenir
+    res.json({
+      ok: true,
+      message: 'Eğer bu e-posta bir mağaza hesabına kayıtlıysa, parola sıfırlama linki gönderildi. Gelen kutunu (ve spam klasörünü) kontrol et.',
+    });
+  } catch (err) {
+    console.error('[password-reset-request] fail:', err.message);
+    next(err);
+  }
+});
+
+// POST /stores/password-reset-confirm
+// Body: { token, new_password }
+const resetConfirmSchema = Joi.object({
+  token:        Joi.string().length(64).required(),
+  new_password: Joi.string().min(8).max(128).required(),
+});
+
+router.post('/password-reset-confirm', async (req, res, next) => {
+  try {
+    const { value, error } = resetConfirmSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const r = await pool.query(
+      `SELECT id, email, name, password_reset_sent_at
+       FROM stores
+       WHERE password_reset_token = $1 AND deleted_at IS NULL`,
+      [value.token]
+    );
+    if (r.rows.length === 0) {
+      return res.status(400).json({ error: 'invalid_token', message: 'Geçersiz veya kullanılmış bağlantı.' });
+    }
+    const store = r.rows[0];
+
+    // 1 saat geçerlilik
+    const sentAt = new Date(store.password_reset_sent_at).getTime();
+    if (Date.now() - sentAt > 60 * 60 * 1000) {
+      return res.status(400).json({ error: 'expired', message: 'Bağlantı süresi dolmuş. Tekrar iste.' });
+    }
+
+    // Parolayı güncelle + token temizle (tek kullanımlık)
+    const newHash = await bcrypt.hash(value.new_password, 12);
+    await pool.query(
+      `UPDATE stores
+       SET password_hash = $1,
+           password_reset_token = NULL,
+           password_reset_sent_at = NULL,
+           updated_at = now()
+       WHERE id = $2`,
+      [newHash, store.id]
+    );
+    console.log(`[password-reset-confirm] store=${store.id} email=${store.email}`);
+
+    res.json({
+      ok: true,
+      message: 'Parolan güncellendi. Yeni parola ile giriş yapabilirsin.',
+      email: store.email,
+    });
+  } catch (err) {
+    console.error('[password-reset-confirm] fail:', err.message);
     next(err);
   }
 });
