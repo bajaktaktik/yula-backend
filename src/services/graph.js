@@ -17,12 +17,13 @@ const redis = require('../cache/redis');
  * Geri dönüş: Map<user_id, 1>  (degree daima 1; alan UI uyumluluğu için)
  */
 async function getVisibleUserIds(userId) {
+  // NOT: u.id <> $1 → kullanıcının kendi kaydı (iOS "kendim" kartı rehberden gelmiş olabilir) hariç
   const { rows } = await pool.query(
     `SELECT u.id::text AS id
      FROM user_contacts uc
      JOIN users u ON u.phone_hash = uc.contact_phone_hash
      WHERE uc.user_id = $1 AND u.status = 'active'
-       AND u.id <> $1`,   -- kullanıcının kendi kaydı (iOS "kendim" kartı gibi) çıkar
+       AND u.id <> $1`,
     [userId]
   );
 
