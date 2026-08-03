@@ -429,6 +429,17 @@ CREATE INDEX IF NOT EXISTS idx_stores_email ON stores(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_stores_pending ON stores(is_email_verified, is_admin_approved) WHERE is_email_verified = true AND is_admin_approved = false;
 CREATE INDEX IF NOT EXISTS idx_stores_verification_token ON stores(verification_token) WHERE verification_token IS NOT NULL;
 
+-- Mağaza profil alanları (mağaza bilgi düzenleme için)
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS description   TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS logo_url      TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS cover_url     TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS address       TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS website_url   TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS instagram     TEXT;   -- @kullaniciadi (username)
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS whatsapp      TEXT;   -- E.164 numarası
+-- Çalışma saatleri JSON: {"pazartesi":"09:00-19:00","carsamba":"kapali",...}
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS working_hours JSONB DEFAULT '{}'::jsonb;
+
 -- İLET (Forward) — kullanıcı 2. derece bir ilanı "kendi çevresine" iletebilir.
 -- Aynı ilan aynı kullanıcı tarafından tek kez iletilir (UNIQUE). Silme cascade.
 -- Ilet kısıtları backend'de: sadece tier=2, hayalet olmayan ilanlar iletilebilir.

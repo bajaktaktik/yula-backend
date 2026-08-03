@@ -237,17 +237,74 @@ function requireStoreAuth(req, res, next) {
   }
 }
 
-// GET /stores/me — kendi bilgisi
+// GET /stores/me — kendi bilgisi (tüm profil alanları dahil)
 router.get('/me', requireStoreAuth, async (req, res, next) => {
   try {
     const r = await pool.query(
-      `SELECT id, email, name, phone, location_city, is_email_verified, is_admin_approved, created_at
+      `SELECT id, email, name, phone, location_city,
+              description, logo_url, cover_url, address,
+              website_url, instagram, whatsapp, working_hours,
+              is_email_verified, is_admin_approved, created_at
        FROM stores WHERE id = $1`,
       [req.storeId]
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
     res.json({ store: r.rows[0] });
   } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /stores/me — profil güncelle
+// Email + password buradan değişmez (ayrı endpoint gerekli).
+const updateSchema = Joi.object({
+  name:          Joi.string().min(2).max(120).trim().optional(),
+  phone:         Joi.string().max(30).trim().allow('').optional(),
+  location_city: Joi.string().max(80).trim().allow('').optional(),
+  description:   Joi.string().max(2000).allow('').optional(),
+  logo_url:      Joi.string().uri().max(500).allow('').optional(),
+  cover_url:     Joi.string().uri().max(500).allow('').optional(),
+  address:       Joi.string().max(500).allow('').optional(),
+  website_url:   Joi.string().uri().max(300).allow('').optional(),
+  instagram:     Joi.string().max(100).trim().allow('').optional(),
+  whatsapp:      Joi.string().max(30).trim().allow('').optional(),
+  working_hours: Joi.object().pattern(Joi.string(), Joi.string().allow('')).optional(),
+});
+
+router.patch('/me', requireStoreAuth, async (req, res, next) => {
+  try {
+    const { value, error } = updateSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    if (Object.keys(value).length === 0) {
+      return res.status(400).json({ error: 'no_fields_to_update' });
+    }
+
+    // Dinamik SET klozu
+    const fields = [];
+    const params = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(value)) {
+      fields.push(`${key} = $${idx}`);
+      // working_hours JSON
+      params.push(key === 'working_hours' ? JSON.stringify(val) : val);
+      idx++;
+    }
+    params.push(req.storeId);
+
+    const r = await pool.query(
+      `UPDATE stores SET ${fields.join(', ')}, updated_at = now()
+       WHERE id = $${idx}
+       RETURNING id, email, name, phone, location_city,
+                 description, logo_url, cover_url, address,
+                 website_url, instagram, whatsapp, working_hours,
+                 is_email_verified, is_admin_approved, created_at`,
+      params
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    res.json({ store: r.rows[0] });
+  } catch (err) {
+    console.error('[store-patch] fail:', err.message);
     next(err);
   }
 });
