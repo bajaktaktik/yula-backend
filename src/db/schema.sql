@@ -469,6 +469,33 @@ CREATE TABLE IF NOT EXISTS store_listing_photos (
 );
 CREATE INDEX IF NOT EXISTS idx_store_listing_photos_listing ON store_listing_photos(listing_id, ordering);
 
+-- MAĞAZA-KULLANICI CHAT — kullanıcı user chat sisteminden bağımsız.
+-- Bir kullanıcı bir mağaza + belirli bir ilan üzerinden konuşma başlatır.
+-- Aynı kullanıcı aynı mağazayla farklı ilanlarda ayrı konuşmalar açabilir.
+CREATE TABLE IF NOT EXISTS store_conversations (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id           UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  user_id            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  store_listing_id   UUID REFERENCES store_listings(id) ON DELETE SET NULL,
+  last_message_at    TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(store_id, user_id, store_listing_id)
+);
+CREATE INDEX IF NOT EXISTS idx_store_conv_store ON store_conversations(store_id, last_message_at DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_store_conv_user  ON store_conversations(user_id,  last_message_at DESC NULLS LAST);
+
+CREATE TABLE IF NOT EXISTS store_messages (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id  UUID NOT NULL REFERENCES store_conversations(id) ON DELETE CASCADE,
+  sender_type      TEXT NOT NULL CHECK (sender_type IN ('store','user')),
+  sender_id        UUID NOT NULL,  -- store.id VEYA user.id (sender_type'a göre)
+  content          TEXT NOT NULL,
+  sent_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  read_at          TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_store_msg_conv ON store_messages(conversation_id, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_store_msg_unread ON store_messages(conversation_id, read_at) WHERE read_at IS NULL;
+
 -- Mağaza profil alanları (mağaza bilgi düzenleme için)
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS description   TEXT;
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS logo_url      TEXT;

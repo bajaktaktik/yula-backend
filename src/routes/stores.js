@@ -515,6 +515,125 @@ router.patch('/me/listings/:id', requireStoreAuth, async (req, res, next) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════
+// MAĞAZA-KULLANICI CHAT — mağaza tarafı endpoint'leri
+// ═══════════════════════════════════════════════════════════
+
+// GET /stores/me/conversations — konuşma listesi
+// Her satırda: karşı taraf (user) bilgisi, ilgili ilan, son mesaj, unread sayısı
+router.get('/me/conversations', requireStoreAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         c.id, c.store_id, c.user_id, c.store_listing_id, c.last_message_at, c.created_at,
+         u.display_name AS user_name,
+         u.avatar_url AS user_avatar,
+         l.title AS listing_title,
+         l.price AS listing_price,
+         (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+          WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS listing_cover,
+         (SELECT content FROM store_messages m WHERE m.conversation_id = c.id
+          ORDER BY m.sent_at DESC LIMIT 1) AS last_message,
+         (SELECT sender_type FROM store_messages m WHERE m.conversation_id = c.id
+          ORDER BY m.sent_at DESC LIMIT 1) AS last_sender_type,
+         (SELECT COUNT(*)::int FROM store_messages m
+          WHERE m.conversation_id = c.id
+            AND m.sender_type = 'user'
+            AND m.read_at IS NULL) AS unread_count
+       FROM store_conversations c
+       JOIN users u ON u.id = c.user_id
+       LEFT JOIN store_listings l ON l.id = c.store_listing_id
+       WHERE c.store_id = $1
+         AND EXISTS (SELECT 1 FROM store_messages m WHERE m.conversation_id = c.id)
+       ORDER BY c.last_message_at DESC NULLS LAST`,
+      [req.storeId]
+    );
+    res.json({ conversations: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /stores/me/conversations/:id/messages — bir konuşmanın mesajları
+router.get('/me/conversations/:id/messages', requireStoreAuth, async (req, res, next) => {
+  try {
+    // Erişim kontrolü
+    const conv = await pool.query(
+      'SELECT id FROM store_conversations WHERE id = $1 AND store_id = $2',
+      [req.params.id, req.storeId]
+    );
+    if (conv.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const { rows } = await pool.query(
+      `SELECT id, sender_type, sender_id, content, sent_at, read_at
+       FROM store_messages
+       WHERE conversation_id = $1
+       ORDER BY sent_at ASC
+       LIMIT 500`,
+      [req.params.id]
+    );
+
+    res.json({ messages: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /stores/me/conversations/:id/messages — mağaza cevap yazar
+const sendStoreMsgSchema = Joi.object({
+  content: Joi.string().min(1).max(2000).trim().required(),
+});
+router.post('/me/conversations/:id/messages', requireStoreAuth, async (req, res, next) => {
+  try {
+    const { value, error } = sendStoreMsgSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const conv = await pool.query(
+      'SELECT id FROM store_conversations WHERE id = $1 AND store_id = $2',
+      [req.params.id, req.storeId]
+    );
+    if (conv.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const ins = await pool.query(
+      `INSERT INTO store_messages (conversation_id, sender_type, sender_id, content)
+       VALUES ($1, 'store', $2, $3)
+       RETURNING id, sender_type, sender_id, content, sent_at`,
+      [req.params.id, req.storeId, value.content]
+    );
+
+    // last_message_at güncelle
+    await pool.query(
+      'UPDATE store_conversations SET last_message_at = now() WHERE id = $1',
+      [req.params.id]
+    );
+
+    res.status(201).json({ message: ins.rows[0] });
+  } catch (err) {
+    console.error('[store-msg-send] fail:', err.message);
+    next(err);
+  }
+});
+
+// POST /stores/me/conversations/:id/read — kullanıcı mesajlarını okundu işaretle
+router.post('/me/conversations/:id/read', requireStoreAuth, async (req, res, next) => {
+  try {
+    const conv = await pool.query(
+      'SELECT id FROM store_conversations WHERE id = $1 AND store_id = $2',
+      [req.params.id, req.storeId]
+    );
+    if (conv.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    await pool.query(
+      `UPDATE store_messages SET read_at = now()
+       WHERE conversation_id = $1 AND sender_type = 'user' AND read_at IS NULL`,
+      [req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /stores/categories — kategori ağacı (dropdown için)
 // Store auth şart değil — kategoriler zaten kamuya açık bilgi.
 router.get('/categories', async (req, res, next) => {
