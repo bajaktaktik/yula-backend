@@ -3470,9 +3470,17 @@ async function renderStores() {
       </button>
     `;
 
+    // Email değişim isteklerini de çek — chip için sayaç
+    let emailChangesCount = 0;
+    try {
+      const ec = await apiJson('/admin/stores/email-changes');
+      emailChangesCount = ec.count || 0;
+    } catch(_) {}
+
     let html = `
       <div class="mb-4 flex flex-wrap gap-2">
         ${chip('pending', '⏳ Onay Bekleyen', counts.pending, 'bg-yellow-500')}
+        ${chip('email-changes', '📧 Email Değişimi', emailChangesCount, 'bg-blue-600')}
         ${chip('approved', '✓ Onaylı', counts.approved, 'bg-green-600')}
         ${chip('rejected', '✗ Reddedilen', counts.rejected, 'bg-red-600')}
         ${chip('unverified', '📧 E-posta Doğrulanmamış', counts.unverified, 'bg-slate-500')}
@@ -3480,6 +3488,12 @@ async function renderStores() {
         ${chip('deleted', '🗑 Silinmiş (30 gün retention)', counts.deleted || 0, 'bg-orange-700')}
       </div>
     `;
+
+    // Email değişimi ekranı — ayrı render
+    if (_storeStatus === 'email-changes') {
+      c.innerHTML = html + await renderEmailChangesSection();
+      return;
+    }
 
     if (stores.length === 0) {
       html += `
@@ -3594,6 +3608,83 @@ function storeCard(s) {
       </div>
     </div>
   `;
+}
+
+// ─── Email değişim istekleri render + action ───
+async function renderEmailChangesSection() {
+  try {
+    const data = await apiJson('/admin/stores/email-changes');
+    const requests = data.requests || [];
+    if (requests.length === 0) {
+      return `
+        <div class="p-16 text-center text-slate-500">
+          <div class="text-5xl mb-3">📧</div>
+          <div class="text-lg font-semibold">Bekleyen e-posta değişim isteği yok</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="mb-3 text-sm text-slate-600">
+        <strong>${requests.length}</strong> mağaza e-posta değişimi istiyor.
+      </div>
+      <div class="space-y-3">
+        ${requests.map(r => `
+          <div class="bg-white border border-blue-200 rounded-lg p-4">
+            <div class="flex items-start gap-4">
+              <div class="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-xl">📧</div>
+              <div class="flex-1 min-w-0">
+                <div class="font-bold text-slate-900">${escapeHtml(r.name)}</div>
+                <div class="mt-2 space-y-1 text-sm">
+                  <div><span class="text-slate-500">Mevcut:</span> <span class="font-mono">${escapeHtml(r.current_email)}</span></div>
+                  <div><span class="text-slate-500">Yeni:</span> <span class="font-mono font-bold text-blue-700">${escapeHtml(r.pending_email)}</span></div>
+                </div>
+                <div class="text-[11px] text-slate-400 mt-2">
+                  İstek zamanı: ${new Date(r.pending_email_requested_at).toLocaleString('tr-TR')}
+                </div>
+                <div class="flex gap-2 mt-3">
+                  <button onclick="approveEmailChange('${r.id}', '${escapeHtml(r.pending_email)}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
+                    ✓ Onayla
+                  </button>
+                  <button onclick="rejectEmailChange('${r.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
+                    ✗ Reddet
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (err) {
+    return '<div class="text-red-600 p-4">Yüklenemedi: ' + err.message + '</div>';
+  }
+}
+
+async function approveEmailChange(id, newEmail) {
+  if (!confirm(`Bu mağazanın e-posta adresi "${newEmail}" olarak değiştirilecek. Hem yeni hem eski adrese bildirim gönderilecek. Onaylıyor musun?`)) return;
+  try {
+    await apiJson(`/admin/stores/${id}/approve-email-change`, { method: 'POST' });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+async function rejectEmailChange(id) {
+  const reason = prompt('Red sebebi (mağazaya mail ile iletilir):');
+  if (!reason || reason.trim().length < 3) {
+    if (reason !== null) alert('Sebep en az 3 karakter olmalı.');
+    return;
+  }
+  try {
+    await apiJson(`/admin/stores/${id}/reject-email-change`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
 }
 
 async function storeApprove(id) {

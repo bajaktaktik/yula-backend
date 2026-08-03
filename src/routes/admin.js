@@ -1746,6 +1746,162 @@ router.post('/stores/:id/reject', requireAuth, requireAdmin, async (req, res, ne
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// EMAIL DEĞİŞİM İSTEKLERİ — mağazalar yeni email talep eder, admin onaylar
+// ═══════════════════════════════════════════════════════════════
+
+// GET /admin/stores/email-changes — bekleyen email değişim istekleri
+router.get('/stores/email-changes', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, email AS current_email, pending_email, name,
+              pending_email_requested_at, is_admin_approved
+       FROM stores
+       WHERE pending_email IS NOT NULL
+         AND deleted_at IS NULL
+       ORDER BY pending_email_requested_at ASC`
+    );
+    res.json({ requests: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/stores/:id/approve-email-change
+router.post('/stores/:id/approve-email-change', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const store = await pool.query(
+      'SELECT email, pending_email, name FROM stores WHERE id = $1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
+    if (store.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const s = store.rows[0];
+    if (!s.pending_email) return res.status(400).json({ error: 'no_pending_change' });
+
+    // Email başka aktif hesapta olmamalı (tekrar kontrol — request'ten bu yana değişebilir)
+    const dup = await pool.query(
+      `SELECT id FROM stores
+       WHERE LOWER(email) = LOWER($1) AND id <> $2 AND deleted_at IS NULL`,
+      [s.pending_email, req.params.id]
+    );
+    if (dup.rows.length > 0) {
+      // Pending'i temizle, mağazaya bildir
+      await pool.query(
+        'UPDATE stores SET pending_email = NULL, pending_email_requested_at = NULL WHERE id = $1',
+        [req.params.id]
+      );
+      return res.status(409).json({ error: 'email_now_taken', message: 'Bu email başka bir mağazaya ait, istek iptal edildi.' });
+    }
+
+    const oldEmail = s.email;
+    // Email değiştir + verified true (admin onayladı), pending temizle
+    await pool.query(
+      `UPDATE stores
+       SET email = pending_email,
+           pending_email = NULL,
+           pending_email_requested_at = NULL,
+           is_email_verified = true,
+           updated_at = now()
+       WHERE id = $1`,
+      [req.params.id]
+    );
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_email_change_approved', 'store', $2, $3)`,
+      [req.userId, req.params.id, `${oldEmail} → ${s.pending_email}`]
+    ).catch(() => {});
+
+    // Bildirim mailleri (async)
+    (async () => {
+      try {
+        const email = require('../services/email');
+        // Yeni adrese bildirim
+        await email.sendEmail({
+          to: s.pending_email,
+          subject: '[Abadan] E-posta değişikliği onaylandı',
+          html: `<p>Merhaba ${s.name},</p>
+            <p>Abadan Mağaza hesabınızın e-posta adresi başarıyla <b>${s.pending_email}</b> olarak güncellendi.</p>
+            <p>Artık bu adres ile giriş yapabilirsiniz.</p>
+            <p>—<br />Abadan</p>`,
+          text: `Merhaba ${s.name},\n\nE-posta adresiniz ${s.pending_email} olarak güncellendi. Artık bu adres ile giriş yapabilirsiniz.\n\n—\nAbadan`,
+        });
+        // Eski adrese güvenlik uyarısı
+        await email.sendEmail({
+          to: oldEmail,
+          subject: '[Abadan] Hesabınızın e-posta adresi değişti',
+          html: `<p>Merhaba ${s.name},</p>
+            <p>Abadan Mağaza hesabınızın e-posta adresi <b>${s.pending_email}</b> olarak değiştirildi.</p>
+            <p>Bu değişikliği <b>siz yapmadıysanız</b> derhal <a href="mailto:destek@abadan.com.tr">destek@abadan.com.tr</a> ile iletişime geçin.</p>
+            <p>—<br />Abadan</p>`,
+          text: `Merhaba ${s.name},\n\nHesabınızın e-posta adresi ${s.pending_email} olarak değiştirildi.\nSiz yapmadıysanız destek@abadan.com.tr ile iletişime geçin.\n\n—\nAbadan`,
+        });
+      } catch (e) {
+        console.warn('[email-change-approve] mail fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[email-change-approve] fail:', err.message);
+    next(err);
+  }
+});
+
+// POST /admin/stores/:id/reject-email-change
+router.post('/stores/:id/reject-email-change', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const reason = (req.body?.reason || '').toString().trim();
+    if (reason.length < 3 || reason.length > 500) {
+      return res.status(400).json({ error: 'reason_required' });
+    }
+    const store = await pool.query(
+      'SELECT email, pending_email, name FROM stores WHERE id = $1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
+    if (store.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const s = store.rows[0];
+    if (!s.pending_email) return res.status(400).json({ error: 'no_pending_change' });
+
+    const rejectedEmail = s.pending_email;
+    await pool.query(
+      `UPDATE stores SET pending_email = NULL, pending_email_requested_at = NULL, updated_at = now()
+       WHERE id = $1`,
+      [req.params.id]
+    );
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_email_change_rejected', 'store', $2, $3)`,
+      [req.userId, req.params.id, `${rejectedEmail}: ${reason}`]
+    ).catch(() => {});
+
+    // Mevcut email'e bildirim
+    (async () => {
+      try {
+        const email = require('../services/email');
+        await email.sendEmail({
+          to: s.email,
+          subject: '[Abadan] E-posta değişim isteğiniz onaylanmadı',
+          html: `<p>Merhaba ${s.name},</p>
+            <p>Yeni e-posta adresi olarak <b>${rejectedEmail}</b> istediğiniz değişiklik onaylanmadı.</p>
+            <p><b>Sebep:</b> ${reason}</p>
+            <p>Sorularınız için: <a href="mailto:destek@abadan.com.tr">destek@abadan.com.tr</a></p>
+            <p>—<br />Abadan</p>`,
+          text: `Merhaba ${s.name},\n\n"${rejectedEmail}" e-posta değişim isteğiniz onaylanmadı.\nSebep: ${reason}\n\nSorular: destek@abadan.com.tr\n\n—\nAbadan`,
+        });
+      } catch (e) {
+        console.warn('[email-change-reject] mail fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[email-change-reject] fail:', err.message);
+    next(err);
+  }
+});
+
 // DELETE /admin/stores/:id — mağaza soft delete (30 gün retention)
 router.delete('/stores/:id', requireAuth, requireAdmin, async (req, res, next) => {
   try {

@@ -455,6 +455,8 @@ CREATE INDEX IF NOT EXISTS idx_store_listings_store ON store_listings(store_id);
 CREATE INDEX IF NOT EXISTS idx_store_listings_status_created ON store_listings(status, created_at DESC)
   WHERE admin_removed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_store_listings_category ON store_listings(category_id) WHERE status = 'active';
+-- Kategori-spesifik ek alanlar (emlak için oda, m², kat vs.)
+ALTER TABLE store_listings ADD COLUMN IF NOT EXISTS attributes JSONB DEFAULT '{}'::jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_store_listings_idem
   ON store_listings(store_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
@@ -495,6 +497,16 @@ CREATE TABLE IF NOT EXISTS store_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_store_msg_conv ON store_messages(conversation_id, sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_store_msg_unread ON store_messages(conversation_id, read_at) WHERE read_at IS NULL;
+
+-- Mağaza ana kategorisi (sektör) — Yeni İlan formunda default seçili gelir.
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS primary_category_id INT REFERENCES categories(id) ON DELETE SET NULL;
+
+-- Mağaza e-posta değişim isteği — admin onayı gerekir.
+-- pending_email dolu ise admin panel'de görünür; onaylanınca stores.email = pending_email olur.
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS pending_email              TEXT;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS pending_email_requested_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_stores_pending_email ON stores(pending_email_requested_at)
+  WHERE pending_email IS NOT NULL;
 
 -- Mağaza soft-delete — 30 gün yasal saklama süresi.
 -- deleted_at NULL → aktif, dolu → silinmiş (görünmez ama veri korunur).
@@ -630,6 +642,33 @@ UPDATE categories
 SET parent_id = (SELECT id FROM categories WHERE slug = 'vasita' AND parent_id IS NULL),
     ordering = 1
 WHERE slug = 'otomobil' AND parent_id IS NULL;
+
+-- Emlak alt-alt kategorileri (mağaza pilotu — ilk mağazalar emlak sektöründen)
+-- Satılık/Kiralık Konut altında konut tipleri, İşyeri altında iş tipleri.
+INSERT INTO categories (parent_id, name, slug, icon, ordering)
+SELECT p.id, v.name, v.slug, v.icon, v.ordering FROM (VALUES
+  -- Satılık Konut alt tipleri
+  ('satilik-konut', 'Daire',            'satilik-daire',       'home',        1),
+  ('satilik-konut', 'Villa',            'satilik-villa',       'home',        2),
+  ('satilik-konut', 'Müstakil Ev',      'satilik-mustakil',    'home',        3),
+  ('satilik-konut', 'Rezidans',         'satilik-rezidans',    'building',    4),
+  ('satilik-konut', 'Yazlık',           'satilik-yazlik',      'sun',         5),
+  ('satilik-konut', 'Yalı',             'satilik-yali',        'anchor',      6),
+  -- Kiralık Konut alt tipleri
+  ('kiralik-konut', 'Daire',            'kiralik-daire',       'home',        1),
+  ('kiralik-konut', 'Villa',            'kiralik-villa',       'home',        2),
+  ('kiralik-konut', 'Müstakil Ev',      'kiralik-mustakil',    'home',        3),
+  ('kiralik-konut', 'Rezidans',         'kiralik-rezidans',    'building',    4),
+  ('kiralik-konut', 'Yazlık',           'kiralik-yazlik',      'sun',         5),
+  ('kiralik-konut', 'Yalı',             'kiralik-yali',        'anchor',      6),
+  -- İşyeri alt tipleri
+  ('isyeri', 'Ofis',                    'isyeri-ofis',         'briefcase',   1),
+  ('isyeri', 'Dükkan / Mağaza',         'isyeri-dukkan',       'shopping',    2),
+  ('isyeri', 'Depo',                    'isyeri-depo',         'box',         3),
+  ('isyeri', 'Fabrika',                 'isyeri-fabrika',      'factory',     4)
+) AS v(parent_slug, name, slug, icon, ordering)
+JOIN categories p ON p.slug = v.parent_slug
+ON CONFLICT (slug) DO NOTHING;
 
 -- Apple Guideline 1.2 — User-Generated Content moderation:
 -- Kullanıcılar uygunsuz içerik veya kötü davranan kullanıcıları şikayet edebilir.

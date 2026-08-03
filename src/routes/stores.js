@@ -257,6 +257,8 @@ router.get('/me', requireStoreAuth, async (req, res, next) => {
       `SELECT id, email, name, phone, location_city,
               description, logo_url, cover_url, address,
               website_url, instagram, whatsapp, working_hours,
+              primary_category_id,
+              pending_email, pending_email_requested_at,
               is_email_verified, is_admin_approved, created_at
        FROM stores WHERE id = $1`,
       [req.storeId]
@@ -278,10 +280,11 @@ const updateSchema = Joi.object({
   logo_url:      Joi.string().uri().max(500).allow('').optional(),
   cover_url:     Joi.string().uri().max(500).allow('').optional(),
   address:       Joi.string().max(500).allow('').optional(),
-  website_url:   Joi.string().uri().max(300).allow('').optional(),
+  website_url:   Joi.string().max(300).allow('').optional(),  // mağaza sahibi ne yazarsa (http zorunlu değil)
   instagram:     Joi.string().max(100).trim().allow('').optional(),
   whatsapp:      Joi.string().max(30).trim().allow('').optional(),
   working_hours: Joi.object().pattern(Joi.string(), Joi.string().allow('')).optional(),
+  primary_category_id: Joi.number().integer().positive().allow(null).optional(),
 });
 
 router.patch('/me', requireStoreAuth, async (req, res, next) => {
@@ -318,6 +321,188 @@ router.patch('/me', requireStoreAuth, async (req, res, next) => {
     res.json({ store: r.rows[0] });
   } catch (err) {
     console.error('[store-patch] fail:', err.message);
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// ÖZET — /stores/me/summary (mağaza sahibi için pazarlama dashboardu)
+// Tek endpoint: sayaçlar, top ilanlar, kategori dağılımı, profil tamamlama,
+// haftalık trend, satış cirosu.
+// ═══════════════════════════════════════════════════════════
+router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
+  try {
+    // Ana sayaçlar + görüntülenme + haftalık delta + satış cirosu — tek query
+    const stats = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'active')::int   AS active_listings,
+         COUNT(*) FILTER (WHERE status = 'sold')::int     AS sold_listings,
+         COUNT(*) FILTER (WHERE status = 'inactive')::int AS inactive_listings,
+         COUNT(*)::int                                     AS total_listings,
+         COALESCE(SUM(view_count) FILTER (WHERE status IN ('active','sold')), 0)::int AS total_views,
+         COALESCE(SUM(price) FILTER (WHERE status = 'sold'), 0)::numeric AS total_revenue,
+         COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS new_last_7d,
+         COUNT(*) FILTER (WHERE created_at >= now() - interval '30 days')::int AS new_last_30d,
+         COUNT(*) FILTER (WHERE sold_at >= now() - interval '30 days')::int AS sold_last_30d,
+         AVG(EXTRACT(EPOCH FROM (sold_at - created_at)) / 86400)
+           FILTER (WHERE status = 'sold' AND sold_at IS NOT NULL)::numeric(10,1) AS avg_days_to_sell
+       FROM store_listings
+       WHERE store_id = $1 AND admin_removed_at IS NULL`,
+      [req.storeId]
+    );
+    const s = stats.rows[0];
+    const activeCount = s.active_listings || 0;
+    const avgViewsPerListing = activeCount > 0 ? Math.round((s.total_views || 0) / activeCount) : 0;
+
+    // En çok görüntülenen aktif ilanlar (top 5)
+    const topViewed = await pool.query(
+      `SELECT l.id, l.title, l.price, l.is_negotiable, l.view_count,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+               WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo
+       FROM store_listings l
+       WHERE l.store_id = $1 AND l.status = 'active' AND l.admin_removed_at IS NULL
+       ORDER BY l.view_count DESC, l.created_at DESC
+       LIMIT 5`,
+      [req.storeId]
+    );
+
+    // Kategori dağılımı — hangi kategoride kaç aktif ilan
+    const categoryDist = await pool.query(
+      `SELECT COALESCE(c.name, 'Kategorisiz') AS category_name,
+              COUNT(*)::int AS count,
+              COALESCE(SUM(l.view_count), 0)::int AS views
+       FROM store_listings l
+       LEFT JOIN categories c ON c.id = l.category_id
+       WHERE l.store_id = $1 AND l.status = 'active' AND l.admin_removed_at IS NULL
+       GROUP BY c.name
+       ORDER BY count DESC, views DESC
+       LIMIT 8`,
+      [req.storeId]
+    );
+
+    // Okunmamış mesaj sayısı — chat modülü
+    const unread = await pool.query(
+      `SELECT COUNT(*)::int AS unread_messages
+       FROM store_messages m
+       JOIN store_conversations c ON c.id = m.conversation_id
+       WHERE c.store_id = $1 AND m.sender_type = 'user' AND m.read_at IS NULL`,
+      [req.storeId]
+    );
+
+    // Toplam aktif konuşma (mesaj yazılmış olanlar)
+    const convStats = await pool.query(
+      `SELECT
+         COUNT(DISTINCT c.id)::int AS total_conversations,
+         COUNT(DISTINCT c.user_id)::int AS unique_customers
+       FROM store_conversations c
+       WHERE c.store_id = $1
+         AND EXISTS (SELECT 1 FROM store_messages m WHERE m.conversation_id = c.id)`,
+      [req.storeId]
+    );
+
+    // Profil tamamlama — mağaza sahibi hangi alanları doldurmuş
+    const profileRes = await pool.query(
+      `SELECT name, phone, whatsapp, instagram, website_url,
+              description, logo_url, cover_url, address, location_city, working_hours,
+              is_admin_approved, created_at
+       FROM stores WHERE id = $1`,
+      [req.storeId]
+    );
+    const p = profileRes.rows[0] || {};
+    const fields = [
+      { key: 'name',          label: 'Mağaza adı',          filled: !!p.name },
+      { key: 'description',   label: 'Açıklama',            filled: !!(p.description && p.description.trim()) },
+      { key: 'logo_url',      label: 'Logo',                filled: !!p.logo_url },
+      { key: 'cover_url',     label: 'Kapak fotoğrafı',     filled: !!p.cover_url },
+      { key: 'phone',         label: 'Telefon',             filled: !!(p.phone && p.phone.trim()) },
+      { key: 'whatsapp',      label: 'WhatsApp',            filled: !!(p.whatsapp && p.whatsapp.trim()) },
+      { key: 'instagram',     label: 'Instagram',           filled: !!(p.instagram && p.instagram.trim()) },
+      { key: 'website_url',   label: 'Website',             filled: !!(p.website_url && p.website_url.trim()) },
+      { key: 'location_city', label: 'Şehir',               filled: !!p.location_city },
+      { key: 'address',       label: 'Adres',               filled: !!(p.address && p.address.trim()) },
+      { key: 'working_hours', label: 'Çalışma saatleri',    filled: !!(p.working_hours && Object.keys(p.working_hours || {}).length > 0) },
+    ];
+    const filledCount = fields.filter(f => f.filled).length;
+    const totalCount = fields.length;
+    const completionPct = Math.round((filledCount / totalCount) * 100);
+
+    // Pazarlama önerileri — dinamik
+    const suggestions = [];
+    if (completionPct < 100) {
+      const missing = fields.filter(f => !f.filled).slice(0, 3).map(f => f.label).join(', ');
+      suggestions.push({
+        icon: '📝',
+        title: 'Profilini tamamla',
+        text: `${100 - completionPct}% daha ekleyecek alan var. Eksikler: ${missing}.`,
+      });
+    }
+    if ((s.new_last_7d || 0) === 0 && (s.active_listings || 0) > 0) {
+      suggestions.push({
+        icon: '🆕',
+        title: 'Son 7 gün yeni ilan yok',
+        text: 'Yeni ilan yayınladığında müşterilerinin akışında öne çıkarsın.',
+      });
+    }
+    if ((s.active_listings || 0) === 0) {
+      suggestions.push({
+        icon: '📦',
+        title: 'İlk ilanını ekle',
+        text: 'Mağaza panelinden "Yeni İlan" ile başla — müşteriler ancak ilan olunca seni görebilir.',
+      });
+    }
+    if (avgViewsPerListing < 5 && (s.active_listings || 0) >= 3) {
+      suggestions.push({
+        icon: '👁',
+        title: 'Görüntülenme az',
+        text: 'İlan başlığı ve fotoğrafları güncelle. Detaylı açıklama daha çok merak uyandırır.',
+      });
+    }
+    if (!p.logo_url || !p.cover_url) {
+      suggestions.push({
+        icon: '🎨',
+        title: 'Logo ve kapak fotoğrafı ekle',
+        text: 'Görsel kimlik güvenilirliği artırır. Mağaza Bilgi > Görseller sekmesinden yükle.',
+      });
+    }
+    if (!p.whatsapp || !p.phone) {
+      suggestions.push({
+        icon: '📞',
+        title: 'İletişim kanallarını ekle',
+        text: 'WhatsApp ve telefon numarası müşterilerin sana kolay ulaşmasını sağlar.',
+      });
+    }
+
+    res.json({
+      counts: {
+        active: activeCount,
+        sold: s.sold_listings || 0,
+        inactive: s.inactive_listings || 0,
+        total: s.total_listings || 0,
+        total_views: s.total_views || 0,
+        total_revenue: parseFloat(s.total_revenue || 0),
+        avg_views_per_listing: avgViewsPerListing,
+        new_last_7d: s.new_last_7d || 0,
+        new_last_30d: s.new_last_30d || 0,
+        sold_last_30d: s.sold_last_30d || 0,
+        avg_days_to_sell: s.avg_days_to_sell ? parseFloat(s.avg_days_to_sell) : null,
+        unread_messages: unread.rows[0].unread_messages || 0,
+        total_conversations: convStats.rows[0].total_conversations || 0,
+        unique_customers: convStats.rows[0].unique_customers || 0,
+      },
+      top_viewed: topViewed.rows,
+      category_dist: categoryDist.rows,
+      profile_completion: {
+        percent: completionPct,
+        filled: filledCount,
+        total: totalCount,
+        fields,
+      },
+      suggestions,
+      store_age_days: Math.floor((Date.now() - new Date(p.created_at).getTime()) / (86400 * 1000)),
+      is_admin_approved: p.is_admin_approved,
+    });
+  } catch (err) {
+    console.error('[store-summary] fail:', err.message);
     next(err);
   }
 });
@@ -378,11 +563,15 @@ const createListingSchema = Joi.object({
   title:         Joi.string().min(2).max(200).trim().required(),
   description:   Joi.string().min(2).max(4000).trim().required(),
   category_id:   Joi.number().integer().positive().optional().allow(null),
-  price:         Joi.number().min(0).max(9999999).required(),
+  price:         Joi.number().min(0).max(999999999).required(),
   currency:      Joi.string().length(3).default('TRY'),
   is_negotiable: Joi.boolean().default(false),
   location_city: Joi.string().max(80).trim().allow('').optional(),
   photos:        Joi.array().items(Joi.string().uri().max(500)).max(8).default([]),
+  // Kategori-spesifik ek alanlar (emlak için oda/m²/kat vs.) — esnek object
+  attributes:    Joi.object().pattern(Joi.string(), Joi.alternatives(
+    Joi.string().allow(''), Joi.number(), Joi.boolean(), Joi.array().items(Joi.string())
+  )).default({}),
 });
 
 // POST /stores/me/listings — yeni ilan
@@ -408,12 +597,13 @@ router.post('/me/listings', requireStoreAuth, async (req, res, next) => {
 
     const ins = await client.query(
       `INSERT INTO store_listings
-         (store_id, title, description, category_id, price, currency, is_negotiable, location_city, idempotency_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (store_id, title, description, category_id, price, currency, is_negotiable, location_city, idempotency_key, attributes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
        RETURNING id`,
       [req.storeId, value.title, value.description, value.category_id || null,
        value.price, value.currency, value.is_negotiable,
-       value.location_city || null, idempotencyKey]
+       value.location_city || null, idempotencyKey,
+       JSON.stringify(value.attributes || {})]
     );
     const listingId = ins.rows[0].id;
 
@@ -445,7 +635,7 @@ router.get('/me/listings', requireStoreAuth, async (req, res, next) => {
     const { rows } = await pool.query(
       `SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
               l.location_city, l.status, l.view_count, l.sold_at, l.created_at, l.updated_at,
-              l.category_id, c.name AS category_name,
+              l.category_id, c.name AS category_name, l.attributes,
               (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
                WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
               (SELECT COUNT(*)::int FROM store_listing_photos p WHERE p.listing_id = l.id) AS photo_count
@@ -569,7 +759,8 @@ router.post('/me/change-password', requireStoreAuth, async (req, res, next) => {
 });
 
 // POST /stores/me/change-email
-// Yeni email adresine verify link gönderilir. Doğrulama sonrası aktif olur.
+// YENİ AKIŞ: yeni email `pending_email` olarak kaydedilir, ADMIN ONAYI BEKLER.
+// Admin onaylayınca stores.email = pending_email olur ve yeni email'e bildirim gider.
 const changeEmailSchema = Joi.object({
   new_email: Joi.string().email().lowercase().trim().required(),
   password:  Joi.string().required(),
@@ -594,39 +785,47 @@ router.post('/me/change-email', requireStoreAuth, async (req, res, next) => {
     const ok = await bcrypt.compare(value.password, s.password_hash);
     if (!ok) return res.status(401).json({ error: 'wrong_password' });
 
-    // Email başka store'da var mı?
+    // Yeni email başka aktif store'da var mı? (kendi pending_email ile çakışma OK — üzerine yazılır)
     const dup = await pool.query(
-      'SELECT id FROM stores WHERE LOWER(email) = LOWER($1) AND id <> $2',
+      `SELECT id FROM stores
+       WHERE (LOWER(email) = LOWER($1) OR LOWER(pending_email) = LOWER($1))
+         AND id <> $2 AND deleted_at IS NULL`,
       [value.new_email, req.storeId]
     );
     if (dup.rows.length > 0) {
       return res.status(409).json({ error: 'email_already_used' });
     }
 
-    // Yeni email + verify pending — is_email_verified=false yap, yeni token üret
-    const token = crypto.randomBytes(32).toString('hex');
+    // pending_email set — admin onayına düşer. Mevcut email değişmez, mağaza eski email'le
+    // giriş yapmaya devam eder ta ki admin onaylayana kadar.
     await pool.query(
       `UPDATE stores
-       SET email = $1, is_email_verified = false,
-           verification_token = $2, verification_sent_at = now(), updated_at = now()
-       WHERE id = $3`,
-      [value.new_email, token, req.storeId]
+       SET pending_email = $1, pending_email_requested_at = now(), updated_at = now()
+       WHERE id = $2`,
+      [value.new_email, req.storeId]
     );
 
-    // Verify mail
-    await email.sendStoreVerification(
-      value.new_email,
-      s.name,
-      `${STORE_FRONTEND_URL}/verify.html?token=${token}`
-    );
-
-    console.log(`[store-changeemail] store=${req.storeId} old=${s.email} new=${value.new_email}`);
+    console.log(`[store-changeemail-request] store=${req.storeId} old=${s.email} pending=${value.new_email}`);
     res.json({
       ok: true,
-      message: 'Yeni e-posta adresinize doğrulama linki gönderildi. Doğrulama sonrası email güncellenmiş olacak.',
+      message: 'E-posta değişim isteğiniz admin onayına gönderildi. Onaylandığında yeni adresinize bilgilendirme gelecek. Bu süreçte mevcut email adresinizle giriş yapmaya devam edebilirsiniz.',
     });
   } catch (err) {
     console.error('[store-changeemail] fail:', err.message);
+    next(err);
+  }
+});
+
+// DELETE /stores/me/change-email — pending email değişikliğini iptal et (mağaza sahibi)
+router.delete('/me/change-email', requireStoreAuth, async (req, res, next) => {
+  try {
+    await pool.query(
+      `UPDATE stores SET pending_email = NULL, pending_email_requested_at = NULL, updated_at = now()
+       WHERE id = $1`,
+      [req.storeId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
     next(err);
   }
 });
