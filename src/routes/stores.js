@@ -352,11 +352,17 @@ router.post('/me/photos', requireStoreAuth, storeUploadLimiter, async (req, res,
     if (!parsed) {
       return res.status(400).json({ error: 'invalid_dataUrl' });
     }
+
+    // type ile R2 klasör ayrımı: store-listings/ | store-logos/ | store-covers/
+    const rawType = String(req.query.type || 'listing').toLowerCase();
+    const prefixMap = { listing: 'store-listings', logo: 'store-logos', cover: 'store-covers' };
+    const prefix = prefixMap[rawType] || 'store-listings';
+
     const url = await storage.uploadPhoto(parsed.buffer, parsed.contentType, {
       userId: req.storeId,
-      prefix: 'store-listings',
+      prefix,
     });
-    console.log(`[store-uploads] store=${req.storeId} → ${url} (${(parsed.buffer.length / 1024).toFixed(1)}KB)`);
+    console.log(`[store-uploads] store=${req.storeId} type=${rawType} → ${url} (${(parsed.buffer.length / 1024).toFixed(1)}KB)`);
     res.status(201).json({ url });
   } catch (err) {
     console.error('[store-uploads] fail:', err.message);
