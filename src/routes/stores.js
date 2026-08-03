@@ -314,6 +314,8 @@ router.patch('/me', requireStoreAuth, async (req, res, next) => {
        RETURNING id, email, name, phone, location_city,
                  description, logo_url, cover_url, address,
                  website_url, instagram, whatsapp, working_hours,
+                 primary_category_id,
+                 pending_email, pending_email_requested_at,
                  is_email_verified, is_admin_approved, created_at`,
       params
     );
@@ -382,17 +384,6 @@ router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
        FROM store_messages m
        JOIN store_conversations c ON c.id = m.conversation_id
        WHERE c.store_id = $1 AND m.sender_type = 'user' AND m.read_at IS NULL`,
-      [req.storeId]
-    );
-
-    // Toplam aktif konuşma (mesaj yazılmış olanlar)
-    const convStats = await pool.query(
-      `SELECT
-         COUNT(DISTINCT c.id)::int AS total_conversations,
-         COUNT(DISTINCT c.user_id)::int AS unique_customers
-       FROM store_conversations c
-       WHERE c.store_id = $1
-         AND EXISTS (SELECT 1 FROM store_messages m WHERE m.conversation_id = c.id)`,
       [req.storeId]
     );
 
@@ -478,8 +469,6 @@ router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
         new_last_7d: s.new_last_7d || 0,
         new_last_30d: s.new_last_30d || 0,
         unread_messages: unread.rows[0].unread_messages || 0,
-        total_conversations: convStats.rows[0].total_conversations || 0,
-        unique_customers: convStats.rows[0].unique_customers || 0,
       },
       top_viewed: topViewed.rows,
       category_dist: categoryDist.rows,
