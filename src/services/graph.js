@@ -21,7 +21,8 @@ async function getVisibleUserIds(userId) {
     `SELECT u.id::text AS id
      FROM user_contacts uc
      JOIN users u ON u.phone_hash = uc.contact_phone_hash
-     WHERE uc.user_id = $1 AND u.status = 'active'`,
+     WHERE uc.user_id = $1 AND u.status = 'active'
+       AND u.id <> $1`,   -- kullanıcının kendi kaydı (iOS "kendim" kartı gibi) çıkar
     [userId]
   );
 
