@@ -500,7 +500,7 @@ const storeUploadLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'too_many_uploads' },
 });
-const MAX_PHOTO_SIZE = 8 * 1024 * 1024;
+const MAX_PHOTO_SIZE = 15 * 1024 * 1024;  // base64 encoded max ~11MB gerçek foto
 
 router.post('/me/photos', requireStoreAuth, storeUploadLimiter, async (req, res, next) => {
   try {
@@ -541,10 +541,10 @@ router.post('/me/photos', requireStoreAuth, storeUploadLimiter, async (req, res,
 // ═══════════════════════════════════════════════════════════
 
 const createListingSchema = Joi.object({
-  title:         Joi.string().min(2).max(200).trim().required(),
-  description:   Joi.string().min(2).max(4000).trim().required(),
+  title:         Joi.string().min(1).max(200).trim().default('İsimsiz İlan'),
+  description:   Joi.string().max(4000).trim().allow('').default(''),
   category_id:   Joi.number().integer().positive().optional().allow(null),
-  price:         Joi.number().min(0).max(999999999).required(),
+  price:         Joi.number().min(0).max(999999999).default(0),
   currency:      Joi.string().length(3).default('TRY'),
   is_negotiable: Joi.boolean().default(false),
   location_city: Joi.string().max(80).trim().allow('').optional(),
@@ -1066,6 +1066,138 @@ router.post('/me/conversations/:id/read', requireStoreAuth, async (req, res, nex
     );
     res.json({ ok: true });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// PUBLIC — mobile app (kullanıcı) tarafı — auth şart değil
+// ═══════════════════════════════════════════════════════════
+
+// GET /stores/public — onaylı aktif mağaza listesi
+// Query params: category (parent slug 'emlak' vs.), city, limit, offset, q
+router.get('/public', async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '30', 10), 100);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const city = req.query.city ? String(req.query.city).trim() : null;
+    const q = req.query.q ? String(req.query.q).trim() : null;
+    const categoryId = req.query.category_id ? parseInt(req.query.category_id, 10) : null;
+
+    const filters = [
+      's.is_admin_approved = true',
+      's.is_email_verified = true',
+      's.deleted_at IS NULL',
+    ];
+    const params = [];
+    if (city) {
+      params.push(city);
+      filters.push(`LOWER(s.location_city) = LOWER($${params.length})`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      filters.push(`(s.name ILIKE $${params.length} OR s.description ILIKE $${params.length})`);
+    }
+    if (categoryId) {
+      params.push(categoryId);
+      filters.push(`s.primary_category_id = $${params.length}`);
+    }
+    params.push(limit, offset);
+
+    const { rows } = await pool.query(
+      `SELECT s.id, s.name, s.location_city, s.description, s.logo_url, s.cover_url,
+              s.primary_category_id, c.name AS category_name,
+              (SELECT COUNT(*)::int FROM store_listings sl
+               WHERE sl.store_id = s.id AND sl.status = 'active' AND sl.admin_removed_at IS NULL) AS listing_count
+       FROM stores s
+       LEFT JOIN categories c ON c.id = s.primary_category_id
+       WHERE ${filters.join(' AND ')}
+       ORDER BY listing_count DESC, s.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+
+    res.json({ stores: rows, count: rows.length });
+  } catch (err) {
+    console.error('[store-public-list] fail:', err.message);
+    next(err);
+  }
+});
+
+// GET /stores/public/:id — bir mağazanın profili + aktif ilanları
+router.get('/public/:id', async (req, res, next) => {
+  try {
+    const storeRes = await pool.query(
+      `SELECT s.id, s.name, s.email, s.phone, s.whatsapp, s.instagram, s.website_url,
+              s.location_city, s.address, s.description, s.logo_url, s.cover_url,
+              s.working_hours, s.created_at,
+              s.primary_category_id, c.name AS category_name
+       FROM stores s
+       LEFT JOIN categories c ON c.id = s.primary_category_id
+       WHERE s.id = $1
+         AND s.is_admin_approved = true
+         AND s.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (storeRes.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const listings = await pool.query(
+      `SELECT l.id, l.title, l.price, l.currency, l.is_negotiable, l.location_city,
+              l.status, l.view_count, l.created_at, l.attributes,
+              l.category_id, cat.name AS category_name,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+               WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT COUNT(*)::int FROM store_listing_photos p WHERE p.listing_id = l.id) AS photo_count
+       FROM store_listings l
+       LEFT JOIN categories cat ON cat.id = l.category_id
+       WHERE l.store_id = $1 AND l.status = 'active' AND l.admin_removed_at IS NULL
+       ORDER BY l.created_at DESC
+       LIMIT 200`,
+      [req.params.id]
+    );
+
+    res.json({ store: storeRes.rows[0], listings: listings.rows });
+  } catch (err) {
+    console.error('[store-public-detail] fail:', err.message);
+    next(err);
+  }
+});
+
+// GET /store-listings/public/:id — bir ilanın tam detayı (fotolar dahil)
+// mount edilirken /store-listings prefix'i ayrı gerekir, biz /stores altında /listings-public/:id kullanacağız
+router.get('/listings-public/:id', async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
+              l.location_city, l.status, l.view_count, l.created_at, l.attributes,
+              l.category_id, cat.name AS category_name,
+              l.store_id,
+              s.name AS store_name, s.logo_url AS store_logo, s.location_city AS store_city,
+              s.phone AS store_phone, s.whatsapp AS store_whatsapp,
+              (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering)
+               FROM store_listing_photos p WHERE p.listing_id = l.id) AS photos
+       FROM store_listings l
+       JOIN stores s ON s.id = l.store_id
+       LEFT JOIN categories cat ON cat.id = l.category_id
+       WHERE l.id = $1
+         AND l.status = 'active'
+         AND l.admin_removed_at IS NULL
+         AND s.is_admin_approved = true
+         AND s.deleted_at IS NULL`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    // View sayacı — async, response beklemez
+    (async () => {
+      try {
+        await pool.query('UPDATE store_listings SET view_count = view_count + 1 WHERE id = $1', [req.params.id]);
+      } catch (_) {}
+    })();
+
+    res.json({ listing: r.rows[0] });
+  } catch (err) {
+    console.error('[store-listing-public-detail] fail:', err.message);
     next(err);
   }
 });
