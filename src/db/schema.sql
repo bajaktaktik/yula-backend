@@ -429,6 +429,46 @@ CREATE INDEX IF NOT EXISTS idx_stores_email ON stores(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_stores_pending ON stores(is_email_verified, is_admin_approved) WHERE is_email_verified = true AND is_admin_approved = false;
 CREATE INDEX IF NOT EXISTS idx_stores_verification_token ON stores(verification_token) WHERE verification_token IS NOT NULL;
 
+-- MAĞAZA İLANLARI — kullanıcı listings'ten TAMAMEN ayrı bir tablo.
+-- Rehber-tabanlı filtreye takılmaz, herkese açık. Cep telefonunda "🏪 Mağazalar" sekmesinde görünür.
+-- Store JWT ile owner kontrol edilir.
+CREATE TABLE IF NOT EXISTS store_listings (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id          UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  title             TEXT NOT NULL,
+  description       TEXT NOT NULL,
+  category_id       INT REFERENCES categories(id),
+  price             NUMERIC(12,2) NOT NULL,
+  currency          TEXT NOT NULL DEFAULT 'TRY',
+  is_negotiable     BOOLEAN NOT NULL DEFAULT false,  -- "ne verirsen"
+  location_city     TEXT,
+  status            TEXT NOT NULL DEFAULT 'active',  -- active | sold | inactive | removed
+  view_count        INT NOT NULL DEFAULT 0,
+  admin_removed_at  TIMESTAMPTZ,
+  admin_removal_reason TEXT,
+  sold_at           TIMESTAMPTZ,
+  idempotency_key   TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_store_listings_store ON store_listings(store_id);
+CREATE INDEX IF NOT EXISTS idx_store_listings_status_created ON store_listings(status, created_at DESC)
+  WHERE admin_removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_store_listings_category ON store_listings(category_id) WHERE status = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_store_listings_idem
+  ON store_listings(store_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS store_listing_photos (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  listing_id  UUID NOT NULL REFERENCES store_listings(id) ON DELETE CASCADE,
+  url         TEXT NOT NULL,
+  thumb_url   TEXT,
+  ordering    INT NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_store_listing_photos_listing ON store_listing_photos(listing_id, ordering);
+
 -- Mağaza profil alanları (mağaza bilgi düzenleme için)
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS description   TEXT;
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS logo_url      TEXT;
