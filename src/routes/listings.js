@@ -121,10 +121,12 @@ router.get('/', requireAuth, async (req, res, next) => {
            lf.listing_id, lf.forwarder_id, lf.created_at,
            COALESCE(uc.contact_name, u.display_name, 'Kullanıcı') AS forwarder_name
          FROM listing_forwards lf
+         JOIN listings l ON l.id = lf.listing_id
          JOIN users u ON u.id = lf.forwarder_id
          LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
          WHERE lf.forwarder_id = ANY($2::uuid[])
-           AND lf.forwarder_id <> $1  -- kendi forward'ı feed'de "İLETİ" olarak görünmesin (2. derece kalır)
+           AND lf.forwarder_id <> $1
+           AND l.user_id <> $1
          ORDER BY lf.listing_id, lf.created_at DESC`,
         [req.userId, visibleIdsArr]
       );
@@ -470,10 +472,12 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
            lf.listing_id, lf.forwarder_id, lf.created_at,
            COALESCE(uc.contact_name, u.display_name, 'Kullanıcı') AS forwarder_name
          FROM listing_forwards lf
+         JOIN listings l ON l.id = lf.listing_id
          JOIN users u ON u.id = lf.forwarder_id
          LEFT JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
          WHERE lf.forwarder_id = ANY($2::uuid[])
-           AND lf.forwarder_id <> $1  -- kendi forward'ı feed'de "İLETİ" olarak görünmesin (2. derece kalır)
+           AND lf.forwarder_id <> $1
+           AND l.user_id <> $1
          ORDER BY lf.listing_id, lf.created_at DESC`,
         [req.userId, visibleIdsArr]
       );
