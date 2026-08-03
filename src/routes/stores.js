@@ -1163,6 +1163,62 @@ router.get('/public/:id', async (req, res, next) => {
   }
 });
 
+// GET /stores/listings-public — TÜM aktif mağaza ilanları (mixed feed, mobile mağaza sekmesi için)
+// Query: category_id, city, q, limit, offset
+router.get('/listings-public', async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 100);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const categoryId = req.query.category_id ? parseInt(req.query.category_id, 10) : null;
+    const city = req.query.city ? String(req.query.city).trim() : null;
+    const q = req.query.q ? String(req.query.q).trim() : null;
+
+    const filters = [
+      "l.status = 'active'",
+      'l.admin_removed_at IS NULL',
+      's.is_admin_approved = true',
+      's.deleted_at IS NULL',
+    ];
+    const params = [];
+    if (categoryId) {
+      params.push(categoryId);
+      filters.push(`l.category_id = $${params.length}`);
+    }
+    if (city) {
+      params.push(city);
+      filters.push(`(LOWER(l.location_city) = LOWER($${params.length}) OR LOWER(s.location_city) = LOWER($${params.length}))`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      filters.push(`(l.title ILIKE $${params.length} OR l.description ILIKE $${params.length} OR s.name ILIKE $${params.length})`);
+    }
+    params.push(limit, offset);
+
+    const { rows } = await pool.query(
+      `SELECT l.id, l.title, l.price, l.currency, l.is_negotiable, l.location_city,
+              l.view_count, l.created_at, l.attributes,
+              l.category_id, cat.name AS category_name,
+              l.store_id,
+              s.name AS store_name, s.logo_url AS store_logo, s.location_city AS store_city,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+               WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT COUNT(*)::int FROM store_listing_photos p WHERE p.listing_id = l.id) AS photo_count
+       FROM store_listings l
+       JOIN stores s ON s.id = l.store_id
+       LEFT JOIN categories cat ON cat.id = l.category_id
+       WHERE ${filters.join(' AND ')}
+       ORDER BY l.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+
+    res.json({ listings: rows, count: rows.length });
+  } catch (err) {
+    console.error('[store-listings-public] fail:', err.message);
+    next(err);
+  }
+});
+
 // GET /store-listings/public/:id — bir ilanın tam detayı (fotolar dahil)
 // mount edilirken /store-listings prefix'i ayrı gerekir, biz /stores altında /listings-public/:id kullanacağız
 router.get('/listings-public/:id', async (req, res, next) => {
