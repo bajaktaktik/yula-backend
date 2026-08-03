@@ -113,8 +113,14 @@ router.get('/', requireAuth, async (req, res, next) => {
     // Bunlar user_id filtresine takılmayabilir (3. derece ilan olabilir), o yüzden
     // ayrı bir listing_id filter'ı ile OR bağlanacak.
     // Map: listing_id → { forwarder_id, forwarder_name, forwarded_at }
+    //
+    // ÖNEMLİ: Profil sayfası (sellerId veya viaUserId) çağrılarında forward'ları KATMA.
+    // Kullanıcı K'nın profiline baktığında, K'nın "tanıdıkları ilanları" sekmesinde
+    // benim kendi 1. derecemin forward ettiği ilanların görünmesi karışıklık yaratır.
+    // Forward özelliği yalnızca ana feed için anlamlı.
+    const isProfileView = !!(req.query.sellerId || req.query.viaUserId);
     const forwardMap = new Map();
-    if (visible.size > 0) {
+    if (visible.size > 0 && !isProfileView) {
       const visibleIdsArr = Array.from(visible.keys());
       const { rows: fwdRows } = await pool.query(
         `SELECT DISTINCT ON (lf.listing_id)
