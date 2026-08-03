@@ -516,6 +516,139 @@ router.patch('/me/listings/:id', requireStoreAuth, async (req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// AYARLAR — parola değiştir, email değiştir, hesap sil
+// ═══════════════════════════════════════════════════════════
+
+// POST /stores/me/change-password
+const changePwSchema = Joi.object({
+  current_password: Joi.string().required(),
+  new_password:     Joi.string().min(8).max(128).required(),
+});
+router.post('/me/change-password', requireStoreAuth, async (req, res, next) => {
+  try {
+    const { value, error } = changePwSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    if (value.current_password === value.new_password) {
+      return res.status(400).json({ error: 'same_password', message: 'Yeni parola eskisiyle aynı olamaz.' });
+    }
+
+    const r = await pool.query('SELECT password_hash FROM stores WHERE id = $1', [req.storeId]);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const ok = await bcrypt.compare(value.current_password, r.rows[0].password_hash);
+    if (!ok) return res.status(401).json({ error: 'wrong_password', message: 'Mevcut parola hatalı.' });
+
+    const newHash = await bcrypt.hash(value.new_password, 12);
+    await pool.query(
+      'UPDATE stores SET password_hash = $1, updated_at = now() WHERE id = $2',
+      [newHash, req.storeId]
+    );
+    console.log(`[store-changepw] store=${req.storeId}`);
+    res.json({ ok: true, message: 'Parola değiştirildi.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /stores/me/change-email
+// Yeni email adresine verify link gönderilir. Doğrulama sonrası aktif olur.
+const changeEmailSchema = Joi.object({
+  new_email: Joi.string().email().lowercase().trim().required(),
+  password:  Joi.string().required(),
+});
+router.post('/me/change-email', requireStoreAuth, async (req, res, next) => {
+  try {
+    const { value, error } = changeEmailSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const r = await pool.query(
+      'SELECT email, password_hash, name FROM stores WHERE id = $1',
+      [req.storeId]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const s = r.rows[0];
+
+    if (s.email.toLowerCase() === value.new_email) {
+      return res.status(400).json({ error: 'same_email', message: 'Yeni email eskisiyle aynı.' });
+    }
+
+    // Parola kontrolü (güvenlik — email hijacking önlemi)
+    const ok = await bcrypt.compare(value.password, s.password_hash);
+    if (!ok) return res.status(401).json({ error: 'wrong_password' });
+
+    // Email başka store'da var mı?
+    const dup = await pool.query(
+      'SELECT id FROM stores WHERE LOWER(email) = LOWER($1) AND id <> $2',
+      [value.new_email, req.storeId]
+    );
+    if (dup.rows.length > 0) {
+      return res.status(409).json({ error: 'email_already_used' });
+    }
+
+    // Yeni email + verify pending — is_email_verified=false yap, yeni token üret
+    const token = crypto.randomBytes(32).toString('hex');
+    await pool.query(
+      `UPDATE stores
+       SET email = $1, is_email_verified = false,
+           verification_token = $2, verification_sent_at = now(), updated_at = now()
+       WHERE id = $3`,
+      [value.new_email, token, req.storeId]
+    );
+
+    // Verify mail
+    await email.sendStoreVerification(
+      value.new_email,
+      s.name,
+      `${STORE_FRONTEND_URL}/verify.html?token=${token}`
+    );
+
+    console.log(`[store-changeemail] store=${req.storeId} old=${s.email} new=${value.new_email}`);
+    res.json({
+      ok: true,
+      message: 'Yeni e-posta adresinize doğrulama linki gönderildi. Doğrulama sonrası email güncellenmiş olacak.',
+    });
+  } catch (err) {
+    console.error('[store-changeemail] fail:', err.message);
+    next(err);
+  }
+});
+
+// DELETE /stores/me — hesabı kalıcı olarak sil
+// Parola onayı zorunlu. İlanlar, konuşmalar, mesajlar CASCADE ile silinir.
+router.delete('/me', requireStoreAuth, async (req, res, next) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) return res.status(400).json({ error: 'password_required' });
+
+    const r = await pool.query('SELECT password_hash, email FROM stores WHERE id = $1', [req.storeId]);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const ok = await bcrypt.compare(password, r.rows[0].password_hash);
+    if (!ok) return res.status(401).json({ error: 'wrong_password' });
+
+    // İlan fotoları R2'den temizle
+    const photos = await pool.query(
+      `SELECT p.url FROM store_listing_photos p
+       JOIN store_listings l ON l.id = p.listing_id
+       WHERE l.store_id = $1`,
+      [req.storeId]
+    );
+    if (photos.rows.length > 0 && storage.cleanupPhotoUrls) {
+      const urls = photos.rows.map((r) => r.url);
+      storage.cleanupPhotoUrls(urls).catch((e) => console.warn('[store-del] R2 cleanup fail:', e.message));
+    }
+
+    await pool.query('DELETE FROM stores WHERE id = $1', [req.storeId]);
+    console.log(`[store-delete] store=${req.storeId} email=${r.rows[0].email}`);
+    res.json({ ok: true, message: 'Hesap silindi.' });
+  } catch (err) {
+    console.error('[store-delete] fail:', err.message);
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
 // MAĞAZA-KULLANICI CHAT — mağaza tarafı endpoint'leri
 // ═══════════════════════════════════════════════════════════
 
