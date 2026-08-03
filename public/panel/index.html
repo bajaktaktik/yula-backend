@@ -3476,7 +3476,8 @@ async function renderStores() {
         ${chip('approved', '✓ Onaylı', counts.approved, 'bg-green-600')}
         ${chip('rejected', '✗ Reddedilen', counts.rejected, 'bg-red-600')}
         ${chip('unverified', '📧 E-posta Doğrulanmamış', counts.unverified, 'bg-slate-500')}
-        ${chip('all', '🌐 Tümü', counts.all, 'bg-slate-700')}
+        ${chip('all', '🌐 Aktif Tümü', counts.all, 'bg-slate-700')}
+        ${chip('deleted', '🗑 Silinmiş (30 gün retention)', counts.deleted || 0, 'bg-orange-700')}
       </div>
     `;
 
@@ -3518,13 +3519,15 @@ function storeStatusBadge(s) {
 
 function storeCard(s) {
   const initial = (s.name || '?').charAt(0).toUpperCase();
-  const statusChip = !s.is_email_verified
-    ? '<span class="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-bold uppercase">📧 Doğrulanmamış</span>'
-    : s.admin_rejection_reason
-      ? '<span class="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded font-bold uppercase">Reddedildi</span>'
-      : s.is_admin_approved
-        ? '<span class="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Aktif</span>'
-        : '<span class="text-[10px] bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded font-bold uppercase">Onay Bekliyor</span>';
+  const statusChip = s.deleted_at
+    ? `<span class="text-[10px] bg-orange-100 text-orange-800 px-2 py-0.5 rounded font-bold uppercase">🗑 Silinmiş · ${s.days_until_purge ?? 0}g kaldı</span>`
+    : !s.is_email_verified
+      ? '<span class="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-bold uppercase">📧 Doğrulanmamış</span>'
+      : s.admin_rejection_reason
+        ? '<span class="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded font-bold uppercase">Reddedildi</span>'
+        : s.is_admin_approved
+          ? '<span class="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded font-bold uppercase">Aktif</span>'
+          : '<span class="text-[10px] bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded font-bold uppercase">Onay Bekliyor</span>';
 
   return `
     <div class="bg-white border border-orange-200 rounded-lg p-4">
@@ -3552,27 +3555,40 @@ function storeCard(s) {
             </div>
           ` : ''}
           <div class="flex gap-2 mt-3 flex-wrap">
-            ${!s.is_admin_approved && s.is_email_verified && !s.admin_rejection_reason ? `
-              <button onclick="storeApprove('${s.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
-                ✓ Onayla
+            ${s.deleted_at ? `
+              <div class="w-full text-xs text-orange-800 bg-orange-50 border-l-2 border-orange-400 pl-2 py-1 mb-1">
+                <b>Silme tarihi:</b> ${new Date(s.deleted_at).toLocaleString('tr-TR')} ·
+                <b>Kalıcı silinme:</b> ${s.days_until_purge ?? 0} gün kaldı
+              </div>
+              <button onclick="storeRestore('${s.id}')" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded">
+                ↻ Geri Yükle
               </button>
-              <button onclick="storeReject('${s.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
-                ✗ Reddet
+              <button onclick="storePurge('${s.id}', '${escapeHtml(s.email)}')" class="px-3 py-1.5 bg-red-700 hover:bg-red-800 text-white text-xs font-semibold rounded">
+                🔥 Şimdi Kalıcı Sil
               </button>
-            ` : ''}
-            ${s.is_admin_approved ? `
-              <button onclick="storeReject('${s.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
-                ⚠️ Onayı Kaldır
+            ` : `
+              ${!s.is_admin_approved && s.is_email_verified && !s.admin_rejection_reason ? `
+                <button onclick="storeApprove('${s.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
+                  ✓ Onayla
+                </button>
+                <button onclick="storeReject('${s.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
+                  ✗ Reddet
+                </button>
+              ` : ''}
+              ${s.is_admin_approved ? `
+                <button onclick="storeReject('${s.id}')" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded">
+                  ⚠️ Onayı Kaldır
+                </button>
+              ` : ''}
+              ${s.admin_rejection_reason ? `
+                <button onclick="storeApprove('${s.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
+                  ✓ Tekrar Onayla
+                </button>
+              ` : ''}
+              <button onclick="storeDelete('${s.id}', '${escapeHtml(s.email)}')" class="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold rounded">
+                🗑 Sil (30g retention)
               </button>
-            ` : ''}
-            ${s.admin_rejection_reason ? `
-              <button onclick="storeApprove('${s.id}')" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded">
-                ✓ Tekrar Onayla
-              </button>
-            ` : ''}
-            <button onclick="storeDelete('${s.id}', '${escapeHtml(s.email)}')" class="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold rounded">
-              🗑 Sil
-            </button>
+            `}
           </div>
         </div>
       </div>
@@ -3608,9 +3624,37 @@ async function storeReject(id) {
 }
 
 async function storeDelete(id, email) {
-  if (!confirm(`"${email}" mağazasını KALICI olarak silmek istediğinden emin misin?\n\nBu işlem geri alınamaz.`)) return;
+  if (!confirm(`"${email}" mağazasını silmek istediğinden emin misin?\n\nHesap ve tüm verileri 30 gün korunacak, sonra otomatik kalıcı silinecek.\nBu süre içinde geri yükleyebilirsin.`)) return;
   try {
     await apiJson(`/admin/stores/${id}`, { method: 'DELETE' });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+async function storeRestore(id) {
+  if (!confirm('Bu mağazayı geri yüklüyor musun? Hesap tekrar giriş yapabilir.')) return;
+  try {
+    await apiJson(`/admin/stores/${id}/restore`, { method: 'POST' });
+    renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+async function storePurge(id, email) {
+  if (!confirm(`⚠️ SON UYARI: "${email}" mağazasını 30 gün beklemeden ŞİMDİ KALICI olarak silmek istediğine emin misin?\n\nTüm veriler (ilanlar, mesajlar, fotolar) GERİ ALINAMAZ şekilde silinecek.`)) return;
+  const reason = prompt('Kalıcı silme sebebi (yasal kayıt için, min 5 karakter):');
+  if (!reason || reason.trim().length < 5) {
+    if (reason !== null) alert('Sebep en az 5 karakter olmalı.');
+    return;
+  }
+  try {
+    await apiJson(`/admin/stores/${id}/purge`, {
+      method: 'DELETE',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
     renderStores();
   } catch (err) {
     alert('Hata: ' + err.message);

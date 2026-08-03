@@ -304,5 +304,12 @@ setupChat(io);
 
   server.listen(config.port, () => {
     console.log(`Abadan API ${config.port} portunda dinliyor (${config.env})`);
+    // Mağaza soft-delete cleanup job (30 gün retention, 24h interval)
+    try {
+      const storeCleanup = require('./services/store-cleanup');
+      storeCleanup.start();
+    } catch (e) {
+      console.error('[startup] store-cleanup start fail:', e.message);
+    }
   });
 })();

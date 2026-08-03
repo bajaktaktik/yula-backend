@@ -496,6 +496,13 @@ CREATE TABLE IF NOT EXISTS store_messages (
 CREATE INDEX IF NOT EXISTS idx_store_msg_conv ON store_messages(conversation_id, sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_store_msg_unread ON store_messages(conversation_id, read_at) WHERE read_at IS NULL;
 
+-- Mağaza soft-delete — 30 gün yasal saklama süresi.
+-- deleted_at NULL → aktif, dolu → silinmiş (görünmez ama veri korunur).
+-- Cleanup job 30 gün sonra hard delete + R2 foto temizliği.
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_stores_deleted ON stores(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_stores_active  ON stores(id) WHERE deleted_at IS NULL;
+
 -- Mağaza profil alanları (mağaza bilgi düzenleme için)
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS description   TEXT;
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS logo_url      TEXT;

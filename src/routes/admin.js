@@ -1625,34 +1625,43 @@ router.post('/create-demo-user', requireAuth, requireAdmin, async (req, res, nex
 // STORES — Mağaza onay kuyruğu
 // ═══════════════════════════════════════════════════════════════════
 
-// GET /admin/stores?status=pending|approved|rejected|unverified|all
+// GET /admin/stores?status=pending|approved|rejected|unverified|deleted|all
 router.get('/stores', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status || 'pending').toString();
     let where = '';
-    if (status === 'pending')     where = 'WHERE is_email_verified = true AND is_admin_approved = false AND admin_rejection_reason IS NULL';
-    else if (status === 'approved')   where = 'WHERE is_admin_approved = true';
-    else if (status === 'rejected')   where = 'WHERE admin_rejection_reason IS NOT NULL';
-    else if (status === 'unverified') where = 'WHERE is_email_verified = false';
-    // 'all' → where boş
+    // 'deleted' hariç tüm filtreler aktif mağazaları gösterir (deleted_at IS NULL)
+    if (status === 'pending')     where = 'WHERE deleted_at IS NULL AND is_email_verified = true AND is_admin_approved = false AND admin_rejection_reason IS NULL';
+    else if (status === 'approved')   where = 'WHERE deleted_at IS NULL AND is_admin_approved = true';
+    else if (status === 'rejected')   where = 'WHERE deleted_at IS NULL AND admin_rejection_reason IS NOT NULL';
+    else if (status === 'unverified') where = 'WHERE deleted_at IS NULL AND is_email_verified = false';
+    else if (status === 'deleted')    where = 'WHERE deleted_at IS NOT NULL';
+    else if (status === 'all')        where = 'WHERE deleted_at IS NULL';
+    // Not: 'all' de artık deleted olanları hariç tutar. Silinmiş için ayrı chip.
 
     const { rows } = await pool.query(
       `SELECT id, email, name, phone, location_city,
               is_email_verified, is_admin_approved, admin_rejection_reason,
-              verification_sent_at, approved_at, created_at
+              verification_sent_at, approved_at, created_at, deleted_at,
+              (CASE WHEN deleted_at IS NOT NULL
+                    THEN GREATEST(0, EXTRACT(DAY FROM (deleted_at + interval '30 days' - now()))::int)
+                    ELSE NULL
+               END) AS days_until_purge
        FROM stores
        ${where}
-       ORDER BY created_at DESC
+       ORDER BY ${status === 'deleted' ? 'deleted_at DESC' : 'created_at DESC'}
        LIMIT 200`
     );
 
+    // Count'lar deleted_at IS NULL için
     const counts = await pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE is_email_verified = true AND is_admin_approved = false AND admin_rejection_reason IS NULL)::int AS pending,
-         COUNT(*) FILTER (WHERE is_admin_approved = true)::int AS approved,
-         COUNT(*) FILTER (WHERE admin_rejection_reason IS NOT NULL)::int AS rejected,
-         COUNT(*) FILTER (WHERE is_email_verified = false)::int AS unverified,
-         COUNT(*)::int AS all
+         COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_email_verified = true AND is_admin_approved = false AND admin_rejection_reason IS NULL)::int AS pending,
+         COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_admin_approved = true)::int AS approved,
+         COUNT(*) FILTER (WHERE deleted_at IS NULL AND admin_rejection_reason IS NOT NULL)::int AS rejected,
+         COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_email_verified = false)::int AS unverified,
+         COUNT(*) FILTER (WHERE deleted_at IS NOT NULL)::int AS deleted,
+         COUNT(*) FILTER (WHERE deleted_at IS NULL)::int AS all
        FROM stores`
     );
 
@@ -1737,17 +1746,82 @@ router.post('/stores/:id/reject', requireAuth, requireAdmin, async (req, res, ne
   }
 });
 
-// DELETE /admin/stores/:id — mağaza sil
+// DELETE /admin/stores/:id — mağaza soft delete (30 gün retention)
 router.delete('/stores/:id', requireAuth, requireAdmin, async (req, res, next) => {
   try {
-    await pool.query('DELETE FROM stores WHERE id = $1', [req.params.id]);
+    await pool.query(
+      'UPDATE stores SET deleted_at = now(), updated_at = now() WHERE id = $1 AND deleted_at IS NULL',
+      [req.params.id]
+    );
     await pool.query(
       `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
-       VALUES ($1, 'store_delete', 'store', $2, NULL)`,
+       VALUES ($1, 'store_soft_delete', 'store', $2, NULL)`,
       [req.userId, req.params.id]
     ).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/stores/:id/restore — soft-deleted mağazayı geri al
+router.post('/stores/:id/restore', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      'UPDATE stores SET deleted_at = NULL, updated_at = now() WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id',
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found_or_not_deleted' });
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_restore', 'store', $2, NULL)`,
+      [req.userId, req.params.id]
+    ).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /admin/stores/:id/purge — 30 gün beklemeden HARD delete (R2 fotoları da temizler)
+router.delete('/stores/:id/purge', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { reason } = req.body || {};
+    if (!reason || reason.trim().length < 5) {
+      return res.status(400).json({ error: 'reason_required', message: 'Kalıcı silme için sebep zorunlu (min 5 karakter).' });
+    }
+
+    // R2 foto cleanup
+    const storage = require('../services/storage');
+    const photos = await pool.query(
+      `SELECT p.url FROM store_listing_photos p
+       JOIN store_listings l ON l.id = p.listing_id
+       WHERE l.store_id = $1
+       UNION ALL
+       SELECT logo_url FROM stores WHERE id = $1 AND logo_url IS NOT NULL
+       UNION ALL
+       SELECT cover_url FROM stores WHERE id = $1 AND cover_url IS NOT NULL`,
+      [req.params.id]
+    );
+    if (photos.rows.length > 0 && storage.cleanupPhotoUrls) {
+      const urls = photos.rows.map((r) => r.url).filter(Boolean);
+      if (urls.length > 0) {
+        await storage.cleanupPhotoUrls(urls, `store ${req.params.id} purge`).catch((e) =>
+          console.warn('[store-purge] R2 fail:', e.message)
+        );
+      }
+    }
+
+    await pool.query('DELETE FROM stores WHERE id = $1', [req.params.id]);
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_hard_delete', 'store', $2, $3)`,
+      [req.userId, req.params.id, reason.trim()]
+    ).catch(() => {});
+    console.log(`[admin-purge] HARD DELETE store=${req.params.id} by admin=${req.userId} reason="${reason.trim()}"`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin-purge] fail:', err.message);
     next(err);
   }
 });

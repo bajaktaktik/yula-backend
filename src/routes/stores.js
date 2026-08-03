@@ -35,9 +35,9 @@ router.post('/register', async (req, res, next) => {
     const { value, error } = registerSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
-    // Email çakışması
+    // Email çakışması — soft-deleted olanlar hariç (30 gün sonra hard delete ile temizlenir)
     const existing = await pool.query(
-      'SELECT id, is_email_verified FROM stores WHERE LOWER(email) = LOWER($1)',
+      'SELECT id, is_email_verified FROM stores WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL',
       [value.email]
     );
     if (existing.rows.length > 0) {
@@ -108,7 +108,7 @@ router.get('/verify', async (req, res) => {
 
     const r = await pool.query(
       `SELECT id, email, name, is_email_verified, verification_sent_at
-       FROM stores WHERE verification_token = $1`,
+       FROM stores WHERE verification_token = $1 AND deleted_at IS NULL`,
       [token]
     );
     if (r.rows.length === 0) {
@@ -161,7 +161,7 @@ router.post('/login', async (req, res, next) => {
 
     const r = await pool.query(
       `SELECT id, email, password_hash, name, phone, location_city,
-              is_email_verified, is_admin_approved, admin_rejection_reason
+              is_email_verified, is_admin_approved, admin_rejection_reason, deleted_at
        FROM stores WHERE LOWER(email) = LOWER($1)`,
       [value.email]
     );
@@ -170,6 +170,11 @@ router.post('/login', async (req, res, next) => {
       return res.status(401).json({ error: 'invalid_credentials' });
     }
     const s = r.rows[0];
+
+    // Soft-deleted hesap — 30 gün yasal saklamada, giriş yok
+    if (s.deleted_at) {
+      return res.status(401).json({ error: 'invalid_credentials' });
+    }
 
     const ok = await bcrypt.compare(value.password, s.password_hash);
     if (!ok) {
@@ -225,13 +230,19 @@ router.post('/login', async (req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 // Middleware — store auth (JWT.type='store' zorunlu)
 // ═══════════════════════════════════════════════════════════
-function requireStoreAuth(req, res, next) {
+async function requireStoreAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'no_token' });
     const payload = jwt.verify(token, config.jwt.accessSecret);
     if (payload.type !== 'store') return res.status(401).json({ error: 'invalid_token_type' });
+    // Soft-deleted hesap kontrolü — JWT hala geçerli ama hesap silinmiş olabilir
+    const chk = await pool.query(
+      'SELECT 1 FROM stores WHERE id = $1 AND deleted_at IS NULL',
+      [payload.sub]
+    );
+    if (chk.rows.length === 0) return res.status(401).json({ error: 'account_removed' });
     req.storeId = payload.sub;
     next();
   } catch (err) {
@@ -614,8 +625,9 @@ router.post('/me/change-email', requireStoreAuth, async (req, res, next) => {
   }
 });
 
-// DELETE /stores/me — hesabı kalıcı olarak sil
-// Parola onayı zorunlu. İlanlar, konuşmalar, mesajlar CASCADE ile silinir.
+// DELETE /stores/me — SOFT DELETE (yasal saklama süresi 30 gün)
+// Parola onayı zorunlu. Veri (ilanlar, mesajlar, fotolar) 30 gün korunur;
+// yasal şikayet süresi sonunda cleanup job hard delete yapar.
 router.delete('/me', requireStoreAuth, async (req, res, next) => {
   try {
     const { password } = req.body || {};
@@ -627,21 +639,16 @@ router.delete('/me', requireStoreAuth, async (req, res, next) => {
     const ok = await bcrypt.compare(password, r.rows[0].password_hash);
     if (!ok) return res.status(401).json({ error: 'wrong_password' });
 
-    // İlan fotoları R2'den temizle
-    const photos = await pool.query(
-      `SELECT p.url FROM store_listing_photos p
-       JOIN store_listings l ON l.id = p.listing_id
-       WHERE l.store_id = $1`,
+    // Soft delete — deleted_at set, veri KORUNUR (R2 fotoları da 30 gün duracak)
+    await pool.query(
+      'UPDATE stores SET deleted_at = now(), updated_at = now() WHERE id = $1',
       [req.storeId]
     );
-    if (photos.rows.length > 0 && storage.cleanupPhotoUrls) {
-      const urls = photos.rows.map((r) => r.url);
-      storage.cleanupPhotoUrls(urls).catch((e) => console.warn('[store-del] R2 cleanup fail:', e.message));
-    }
-
-    await pool.query('DELETE FROM stores WHERE id = $1', [req.storeId]);
-    console.log(`[store-delete] store=${req.storeId} email=${r.rows[0].email}`);
-    res.json({ ok: true, message: 'Hesap silindi.' });
+    console.log(`[store-soft-delete] store=${req.storeId} email=${r.rows[0].email} (30 gün sonra hard delete)`);
+    res.json({
+      ok: true,
+      message: 'Hesabınız silindi. Yasal yükümlülükler gereği veriler 30 gün saklanır, ardından tamamen kaldırılır.',
+    });
   } catch (err) {
     console.error('[store-delete] fail:', err.message);
     next(err);
