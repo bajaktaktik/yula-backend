@@ -558,6 +558,11 @@ ALTER TABLE stores ADD COLUMN IF NOT EXISTS whatsapp      TEXT;   -- E.164 numar
 -- Çalışma saatleri JSON: {"pazartesi":"09:00-19:00","carsamba":"kapali",...}
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS working_hours JSONB DEFAULT '{}'::jsonb;
 
+-- Google Maps linki (mağazanın kendisinin konumu) — kullanıcı tıklayınca haritalar açılır
+ALTER TABLE stores          ADD COLUMN IF NOT EXISTS maps_url TEXT;
+-- İlana özel konum (mağazadan farklı olabilir; ör. emlak ilanının kendisinin adresi)
+ALTER TABLE store_listings  ADD COLUMN IF NOT EXISTS maps_url TEXT;
+
 -- İLET (Forward) — kullanıcı 2. derece bir ilanı "kendi çevresine" iletebilir.
 -- Aynı ilan aynı kullanıcı tarafından tek kez iletilir (UNIQUE). Silme cascade.
 -- Ilet kısıtları backend'de: sadece tier=2, hayalet olmayan ilanlar iletilebilir.

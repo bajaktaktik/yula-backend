@@ -257,7 +257,7 @@ router.get('/me', requireStoreAuth, async (req, res, next) => {
       `SELECT id, email, name, phone, location_city,
               description, logo_url, cover_url, address,
               website_url, instagram, whatsapp, working_hours,
-              primary_category_id,
+              primary_category_id, maps_url,
               pending_email, pending_email_requested_at,
               is_email_verified, is_admin_approved, created_at
        FROM stores WHERE id = $1`,
@@ -285,6 +285,7 @@ const updateSchema = Joi.object({
   whatsapp:      Joi.string().max(30).trim().allow('').optional(),
   working_hours: Joi.object().pattern(Joi.string(), Joi.string().allow('')).optional(),
   primary_category_id: Joi.number().integer().positive().allow(null).optional(),
+  maps_url:      Joi.string().max(500).allow('').optional(),   // Google Maps / Yandex vb. konum linki
 });
 
 router.patch('/me', requireStoreAuth, async (req, res, next) => {
@@ -314,7 +315,7 @@ router.patch('/me', requireStoreAuth, async (req, res, next) => {
        RETURNING id, email, name, phone, location_city,
                  description, logo_url, cover_url, address,
                  website_url, instagram, whatsapp, working_hours,
-                 primary_category_id,
+                 primary_category_id, maps_url,
                  pending_email, pending_email_requested_at,
                  is_email_verified, is_admin_approved, created_at`,
       params
@@ -576,6 +577,7 @@ const createListingSchema = Joi.object({
   currency:      Joi.string().length(3).default('TRY'),
   is_negotiable: Joi.boolean().default(false),
   location_city: Joi.string().max(80).trim().allow('').optional(),
+  maps_url:      Joi.string().max(500).allow('').optional(),
   photos:        Joi.array().items(Joi.string().uri().max(500)).max(8).default([]),
   // Kategori-spesifik ek alanlar (emlak için oda/m²/kat vs.) — esnek object
   attributes:    Joi.object().pattern(Joi.string(), Joi.alternatives(
@@ -608,12 +610,12 @@ router.post('/me/listings', requireStoreAuth, async (req, res, next) => {
     // Onaylandığında status='active' olur, public feed'de görünür.
     const ins = await client.query(
       `INSERT INTO store_listings
-         (store_id, title, description, category_id, price, currency, is_negotiable, location_city, idempotency_key, attributes, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, 'pending')
+         (store_id, title, description, category_id, price, currency, is_negotiable, location_city, maps_url, idempotency_key, attributes, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, 'pending')
        RETURNING id`,
       [req.storeId, value.title, value.description, value.category_id || null,
        value.price, value.currency, value.is_negotiable,
-       value.location_city || null, idempotencyKey,
+       value.location_city || null, value.maps_url || null, idempotencyKey,
        JSON.stringify(value.attributes || {})]
     );
     const listingId = ins.rows[0].id;
@@ -719,6 +721,7 @@ const updateListingSchema = Joi.object({
   price:         Joi.number().min(0).max(999999999).default(0),
   is_negotiable: Joi.boolean().default(false),
   location_city: Joi.string().max(80).trim().allow('').optional(),
+  maps_url:      Joi.string().max(500).allow('').optional(),
   photos:        Joi.array().items(Joi.string().uri().max(500)).max(8).default([]),
   attributes:    Joi.object().pattern(Joi.string(), Joi.alternatives(
     Joi.string().allow(''), Joi.number(), Joi.boolean(), Joi.array().items(Joi.string())
@@ -745,14 +748,14 @@ router.put('/me/listings/:id', requireStoreAuth, async (req, res, next) => {
     await client.query(
       `UPDATE store_listings
        SET title = $1, description = $2, category_id = $3, price = $4,
-           is_negotiable = $5, location_city = $6, attributes = $7::jsonb,
+           is_negotiable = $5, location_city = $6, maps_url = $7, attributes = $8::jsonb,
            status = 'pending',
            admin_removed_at = NULL, admin_removal_reason = NULL,
            updated_at = now()
-       WHERE id = $8 AND store_id = $9`,
+       WHERE id = $9 AND store_id = $10`,
       [
         value.title, value.description, value.category_id || null, value.price,
-        value.is_negotiable, value.location_city || null,
+        value.is_negotiable, value.location_city || null, value.maps_url || null,
         JSON.stringify(value.attributes || {}),
         req.params.id, req.storeId,
       ]
@@ -1279,7 +1282,7 @@ router.get('/public/:id', async (req, res, next) => {
     const storeRes = await pool.query(
       `SELECT s.id, s.name, s.email, s.phone, s.whatsapp, s.instagram, s.website_url,
               s.location_city, s.address, s.description, s.logo_url, s.cover_url,
-              s.working_hours, s.created_at,
+              s.working_hours, s.created_at, s.maps_url,
               s.primary_category_id, c.name AS category_name
        FROM stores s
        LEFT JOIN categories c ON c.id = s.primary_category_id
@@ -1381,11 +1384,12 @@ router.get('/listings-public/:id', async (req, res, next) => {
   try {
     const r = await pool.query(
       `SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
-              l.location_city, l.status, l.view_count, l.created_at, l.attributes,
+              l.location_city, l.status, l.view_count, l.created_at, l.attributes, l.maps_url,
               l.category_id, cat.name AS category_name,
               l.store_id,
               s.name AS store_name, s.logo_url AS store_logo, s.location_city AS store_city,
               s.phone AS store_phone, s.whatsapp AS store_whatsapp,
+              s.maps_url AS store_maps_url,
               (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering)
                FROM store_listing_photos p WHERE p.listing_id = l.id) AS photos
        FROM store_listings l
