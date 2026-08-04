@@ -1099,10 +1099,17 @@ router.post('/me/conversations/:id/messages', requireStoreAuth, async (req, res,
     if (error) return res.status(400).json({ error: error.message });
 
     const conv = await pool.query(
-      'SELECT id FROM store_conversations WHERE id = $1 AND store_id = $2',
+      `SELECT c.id, c.user_id, c.store_listing_id,
+              s.name AS store_name, s.logo_url AS store_logo,
+              l.title AS listing_title
+       FROM store_conversations c
+       JOIN stores s ON s.id = c.store_id
+       LEFT JOIN store_listings l ON l.id = c.store_listing_id
+       WHERE c.id = $1 AND c.store_id = $2`,
       [req.params.id, req.storeId]
     );
     if (conv.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const convInfo = conv.rows[0];
 
     const ins = await pool.query(
       `INSERT INTO store_messages (conversation_id, sender_type, sender_id, content)
@@ -1116,6 +1123,28 @@ router.post('/me/conversations/:id/messages', requireStoreAuth, async (req, res,
       'UPDATE store_conversations SET last_message_at = now() WHERE id = $1',
       [req.params.id]
     );
+
+    // Kullanıcıya push notification — async, response'u geciktirmez
+    (async () => {
+      try {
+        const push = require('../services/push');
+        await push.sendToUser(convInfo.user_id, {
+          title: `💬 ${convInfo.store_name || 'Mağaza'}`,
+          body: value.content.length > 120 ? value.content.slice(0, 117) + '…' : value.content,
+          data: {
+            type: 'store_message',
+            conversation_id: req.params.id,
+            store_id: req.storeId,
+            store_name: convInfo.store_name,
+            store_logo: convInfo.store_logo,
+            listing_id: convInfo.store_listing_id,
+            listing_title: convInfo.listing_title,
+          },
+        });
+      } catch (e) {
+        console.warn('[store-msg-push] fail:', e.message);
+      }
+    })();
 
     res.status(201).json({ message: ins.rows[0] });
   } catch (err) {
