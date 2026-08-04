@@ -1284,8 +1284,15 @@ router.get('/listings-public', async (req, res, next) => {
     ];
     const params = [];
     if (categoryId) {
+      // Recursive: seçilen kategori + tüm alt kategorilerinin ilanları
       params.push(categoryId);
-      filters.push(`l.category_id = $${params.length}`);
+      filters.push(`l.category_id IN (
+        WITH RECURSIVE sub AS (
+          SELECT id FROM categories WHERE id = $${params.length}
+          UNION ALL
+          SELECT c.id FROM categories c JOIN sub ON c.parent_id = sub.id
+        ) SELECT id FROM sub
+      )`);
     }
     if (city) {
       params.push(city);
@@ -1369,11 +1376,18 @@ router.get('/listings-public/:id', async (req, res, next) => {
 const { requireAuth: requireUserAuth } = require('../auth/middleware');
 
 // POST /stores/:storeId/conversations — chat başlat veya mevcutu al
-// Body: { store_listing_id?: string }
+// Body: { store_listing_id: string } — ilan ZORUNLU (Abadan felsefesi: her sohbet bir ilana bağlı)
 router.post('/:storeId/conversations', requireUserAuth, async (req, res, next) => {
   try {
     const storeId = req.params.storeId;
     const listingId = req.body?.store_listing_id || null;
+
+    if (!listingId) {
+      return res.status(400).json({
+        error: 'listing_required',
+        message: 'Mağazayla sohbet başlatmak için bir ilan seçmelisin.',
+      });
+    }
 
     // Mağaza var + onaylı + silinmemiş mi
     const storeCheck = await pool.query(
@@ -1383,15 +1397,13 @@ router.post('/:storeId/conversations', requireUserAuth, async (req, res, next) =
     );
     if (storeCheck.rows.length === 0) return res.status(404).json({ error: 'store_not_found' });
 
-    // Eğer listing_id verildiyse doğrula (o mağazanın ilanı mı)
-    if (listingId) {
-      const listingCheck = await pool.query(
-        `SELECT id FROM store_listings
-         WHERE id = $1 AND store_id = $2 AND status = 'active' AND admin_removed_at IS NULL`,
-        [listingId, storeId]
-      );
-      if (listingCheck.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
-    }
+    // İlan doğrulama — bu mağazanın aktif ilanı olmalı
+    const listingCheck = await pool.query(
+      `SELECT id FROM store_listings
+       WHERE id = $1 AND store_id = $2 AND status = 'active' AND admin_removed_at IS NULL`,
+      [listingId, storeId]
+    );
+    if (listingCheck.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
 
     // Var olan konuşma? (aynı store + user + listing)
     const existing = await pool.query(
@@ -1528,7 +1540,8 @@ router.post('/conversations/:id/read', requireUserAuth, async (req, res, next) =
   }
 });
 
-// GET /stores/categories — kategori ağacı (dropdown için)
+// GET /stores/categories — kategori ağacı
+// listing_count her kategoride kendi + alt kategorilerinin toplamıdır (recursive)
 // Store auth şart değil — kategoriler zaten kamuya açık bilgi.
 router.get('/categories', async (req, res, next) => {
   try {
@@ -1537,16 +1550,44 @@ router.get('/categories', async (req, res, next) => {
        FROM categories
        ORDER BY parent_id NULLS FIRST, ordering, name`
     );
+
+    // Her kategori için DOĞRUDAN ilan sayısı (yalnız aktif + onaylı mağaza)
+    const { rows: countRows } = await pool.query(
+      `SELECT l.category_id, COUNT(*)::int AS n
+       FROM store_listings l
+       JOIN stores s ON s.id = l.store_id
+       WHERE l.status = 'active'
+         AND l.admin_removed_at IS NULL
+         AND s.is_admin_approved = true
+         AND s.deleted_at IS NULL
+         AND l.category_id IS NOT NULL
+       GROUP BY l.category_id`
+    );
+    const directCount = new Map(countRows.map((r) => [r.category_id, r.n]));
+
     // Ağaç yapısı
     const byId = new Map();
     const roots = [];
-    rows.forEach((c) => byId.set(c.id, { ...c, children: [] }));
+    rows.forEach((c) => byId.set(c.id, { ...c, children: [], listing_count: directCount.get(c.id) || 0 }));
     rows.forEach((c) => {
       const node = byId.get(c.id);
       if (c.parent_id) byId.get(c.parent_id)?.children.push(node);
       else roots.push(node);
     });
-    res.json({ tree: roots, flat: rows });
+
+    // Recursive count — çocuklar toplamı da eklensin
+    function computeTotal(node) {
+      let total = node.listing_count;
+      for (const ch of node.children) total += computeTotal(ch);
+      node.listing_count = total;
+      return total;
+    }
+    roots.forEach(computeTotal);
+
+    // Toplam (Tüm İlanlar) sayısı
+    const totalAll = Array.from(directCount.values()).reduce((s, n) => s + n, 0);
+
+    res.json({ tree: roots, flat: rows, total: totalAll });
   } catch (err) {
     next(err);
   }

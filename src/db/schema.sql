@@ -624,11 +624,11 @@ SELECT p.id, v.name, v.slug, v.icon, v.ordering FROM (VALUES
   ('vasita', 'Ticari Araç',                 'ticari-arac',          'truck',       3),
   ('vasita', 'Yedek Parça & Aksesuar',      'yedek-parca',          'wrench',      4),
 
-  -- Emlak
-  ('emlak', 'Satılık Konut',                'satilik-konut',        'house',       1),
-  ('emlak', 'Kiralık Konut',                'kiralik-konut',        'key',         2),
-  ('emlak', 'İşyeri',                       'isyeri',               'briefcase',   3),
-  ('emlak', 'Arsa',                         'arsa',                 'map',         4),
+  -- Emlak (2. seviye: gayrimenkul TÜRÜ; satılık/kiralık ilan attribute'u olarak tutulur)
+  ('emlak', 'Konut',                        'konut',                'house',       1),
+  ('emlak', 'İşyeri',                       'isyeri',               'briefcase',   2),
+  ('emlak', 'Arsa',                         'arsa',                 'map',         3),
+  ('emlak', 'Devre Mülk',                   'devre-mulk',           'calendar',    4),
 
   -- Diğer
   ('diger',  'Hizmetler',                   'hizmet',               'briefcase',   1),
@@ -649,24 +649,17 @@ SET parent_id = (SELECT id FROM categories WHERE slug = 'vasita' AND parent_id I
     ordering = 1
 WHERE slug = 'otomobil' AND parent_id IS NULL;
 
--- Emlak alt-alt kategorileri (mağaza pilotu — ilk mağazalar emlak sektöründen)
--- Satılık/Kiralık Konut altında konut tipleri, İşyeri altında iş tipleri.
+-- Emlak alt-alt kategorileri (3. seviye) — konut ve işyeri tipleri.
+-- İşlem tipi (satılık/kiralık) taşınmaz TÜRÜ değil, ilan attribute'udur (attributes.transaction_type).
 INSERT INTO categories (parent_id, name, slug, icon, ordering)
 SELECT p.id, v.name, v.slug, v.icon, v.ordering FROM (VALUES
-  -- Satılık Konut alt tipleri
-  ('satilik-konut', 'Daire',            'satilik-daire',       'home',        1),
-  ('satilik-konut', 'Villa',            'satilik-villa',       'home',        2),
-  ('satilik-konut', 'Müstakil Ev',      'satilik-mustakil',    'home',        3),
-  ('satilik-konut', 'Rezidans',         'satilik-rezidans',    'building',    4),
-  ('satilik-konut', 'Yazlık',           'satilik-yazlik',      'sun',         5),
-  ('satilik-konut', 'Yalı',             'satilik-yali',        'anchor',      6),
-  -- Kiralık Konut alt tipleri
-  ('kiralik-konut', 'Daire',            'kiralik-daire',       'home',        1),
-  ('kiralik-konut', 'Villa',            'kiralik-villa',       'home',        2),
-  ('kiralik-konut', 'Müstakil Ev',      'kiralik-mustakil',    'home',        3),
-  ('kiralik-konut', 'Rezidans',         'kiralik-rezidans',    'building',    4),
-  ('kiralik-konut', 'Yazlık',           'kiralik-yazlik',      'sun',         5),
-  ('kiralik-konut', 'Yalı',             'kiralik-yali',        'anchor',      6),
+  -- Konut tipleri
+  ('konut', 'Daire',                    'konut-daire',         'home',        1),
+  ('konut', 'Villa',                    'konut-villa',         'home',        2),
+  ('konut', 'Müstakil Ev',              'konut-mustakil',      'home',        3),
+  ('konut', 'Rezidans',                 'konut-rezidans',      'building',    4),
+  ('konut', 'Yazlık',                   'konut-yazlik',        'sun',         5),
+  ('konut', 'Yalı',                     'konut-yali',          'anchor',      6),
   -- İşyeri alt tipleri
   ('isyeri', 'Ofis',                    'isyeri-ofis',         'briefcase',   1),
   ('isyeri', 'Dükkan / Mağaza',         'isyeri-dukkan',       'shopping',    2),
@@ -675,6 +668,81 @@ SELECT p.id, v.name, v.slug, v.icon, v.ordering FROM (VALUES
 ) AS v(parent_slug, name, slug, icon, ordering)
 JOIN categories p ON p.slug = v.parent_slug
 ON CONFLICT (slug) DO NOTHING;
+
+-- ────────────────────────────────────────────────────────────
+-- MIGRATION: Eski emlak taxonomy'sini yeni "Konut" altına taşı
+-- Eski: satilik-konut/kiralik-konut (2. seviye) + satilik-daire vs. (3. seviye)
+-- Yeni: konut (2. seviye) + konut-daire vs. (3. seviye)
+-- Mevcut ilanları da yeni kategori id'sine taşı ve işlem tipini attribute'a yaz.
+-- ────────────────────────────────────────────────────────────
+DO $$
+DECLARE
+  konut_id INT;
+  satilik_id INT;
+  kiralik_id INT;
+BEGIN
+  SELECT id INTO konut_id FROM categories WHERE slug = 'konut' LIMIT 1;
+  SELECT id INTO satilik_id FROM categories WHERE slug = 'satilik-konut' LIMIT 1;
+  SELECT id INTO kiralik_id FROM categories WHERE slug = 'kiralik-konut' LIMIT 1;
+
+  -- Eski 3. seviye kategorilerdeki ilanları yeni konut alt tipine taşı + işlem tipini attribute'a yaz
+  IF satilik_id IS NOT NULL THEN
+    UPDATE store_listings sl
+    SET category_id = k.new_id,
+        attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'satilik')
+    FROM (VALUES
+      ('satilik-daire',     'konut-daire'),
+      ('satilik-villa',     'konut-villa'),
+      ('satilik-mustakil',  'konut-mustakil'),
+      ('satilik-rezidans',  'konut-rezidans'),
+      ('satilik-yazlik',    'konut-yazlik'),
+      ('satilik-yali',      'konut-yali')
+    ) AS m(old_slug, new_slug)
+    JOIN categories oc ON oc.slug = m.old_slug
+    JOIN LATERAL (SELECT id AS new_id FROM categories WHERE slug = m.new_slug) k ON true
+    WHERE sl.category_id = oc.id;
+
+    -- Kiralık
+    UPDATE store_listings sl
+    SET category_id = k.new_id,
+        attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'kiralik')
+    FROM (VALUES
+      ('kiralik-daire',     'konut-daire'),
+      ('kiralik-villa',     'konut-villa'),
+      ('kiralik-mustakil',  'konut-mustakil'),
+      ('kiralik-rezidans',  'konut-rezidans'),
+      ('kiralik-yazlik',    'konut-yazlik'),
+      ('kiralik-yali',      'konut-yali')
+    ) AS m(old_slug, new_slug)
+    JOIN categories oc ON oc.slug = m.old_slug
+    JOIN LATERAL (SELECT id AS new_id FROM categories WHERE slug = m.new_slug) k ON true
+    WHERE sl.category_id = oc.id;
+
+    -- Doğrudan Satılık Konut / Kiralık Konut'a bağlı (alt tip seçmemiş) ilanları da Konut'a taşı
+    UPDATE store_listings
+    SET category_id = konut_id,
+        attributes = COALESCE(attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'satilik')
+    WHERE category_id = satilik_id;
+
+    IF kiralik_id IS NOT NULL THEN
+      UPDATE store_listings
+      SET category_id = konut_id,
+          attributes = COALESCE(attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'kiralik')
+      WHERE category_id = kiralik_id;
+    END IF;
+
+    -- primary_category_id de mağazalarda güncellensin
+    UPDATE stores SET primary_category_id = konut_id
+    WHERE primary_category_id IN (satilik_id, COALESCE(kiralik_id, -1));
+
+    -- Eski kategori satırlarını sil (foreign key artık kalmadı)
+    DELETE FROM categories WHERE slug IN (
+      'satilik-daire','satilik-villa','satilik-mustakil','satilik-rezidans','satilik-yazlik','satilik-yali',
+      'kiralik-daire','kiralik-villa','kiralik-mustakil','kiralik-rezidans','kiralik-yazlik','kiralik-yali'
+    );
+    DELETE FROM categories WHERE slug IN ('satilik-konut','kiralik-konut');
+  END IF;
+END $$;
 
 -- Apple Guideline 1.2 — User-Generated Content moderation:
 -- Kullanıcılar uygunsuz içerik veya kötü davranan kullanıcıları şikayet edebilir.
