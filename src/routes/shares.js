@@ -357,7 +357,23 @@ function renderPreviewHTML(l, token) {
       border: 1.5px solid rgba(255,255,255,0.4);
     }
     .store-row { display: flex; gap: 10px; justify-content: center; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-    .store-badge-img { height: 48px; width: auto; display: block; }
+    /* Kendi inline SVG badge'lerimiz — dış CDN bağımlılığı yok, her zaman yüklenir */
+    .store-badge-btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 16px; background: #000; color: #fff;
+      border-radius: 8px; text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.2);
+      min-width: 150px;
+      transition: transform 0.15s;
+    }
+    .store-badge-btn:hover { transform: scale(1.04); }
+    .store-badge-btn svg { flex-shrink: 0; }
+    .store-badge-btn .top {
+      font-size: 10px; line-height: 1.1; opacity: 0.85; letter-spacing: 0.3px;
+    }
+    .store-badge-btn .bot {
+      font-size: 17px; line-height: 1.1; font-weight: 600;
+    }
     .store-badge {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 10px 14px; background: white; color: #0f172a;
@@ -405,13 +421,43 @@ function renderPreviewHTML(l, token) {
         <div class="cta-title">Bu ilanla ilgileniyor musun?</div>
         <div class="cta-desc">Abadan'a kayıt ol, satıcıyla direkt mesajlaş.<br />Rehberdeki tanıdıklarınla güvenli alışveriş.</div>
         <div class="store-row">
-          <a href="${iosUrl}" target="_blank" rel="noopener" aria-label="App Store'dan İndir">
-            <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/tr-tr?size=250x83"
-                 alt="App Store'dan İndir" class="store-badge-img" />
+          <!-- App Store — inline SVG (Apple logosu) + iki satır metin -->
+          <a href="${iosUrl}" target="_blank" rel="noopener" class="store-badge-btn" aria-label="App Store'dan İndir">
+            <svg width="26" height="30" viewBox="0 0 22 26" fill="#fff" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M17.55 20.13c-.98 1.44-2 2.87-3.6 2.9-1.57.03-2.08-.93-3.87-.93s-2.36.9-3.85.96c-1.54.06-2.71-1.56-3.7-2.98C.5 17.15-1.05 11.77 1.03 8.14c1.03-1.8 2.87-2.94 4.87-2.97 1.52-.03 2.95 1.02 3.87 1.02.93 0 2.67-1.26 4.5-1.08.77.03 2.92.31 4.3 2.33-.11.07-2.57 1.5-2.54 4.48.03 3.56 3.13 4.75 3.16 4.76-.02.09-.5 1.7-1.64 3.45zM12.4 3.15c.83-1 1.4-2.4 1.24-3.79-1.2.05-2.65.8-3.51 1.8-.77.88-1.45 2.31-1.27 3.67 1.34.1 2.71-.68 3.54-1.68z"/>
+            </svg>
+            <div>
+              <div class="top">İndir</div>
+              <div class="bot">App Store</div>
+            </div>
           </a>
-          <a href="${androidUrl}" target="_blank" rel="noopener" aria-label="Google Play'den indirin">
-            <img src="https://play.google.com/intl/en_us/badges/static/images/badges/tr_badge_web_generic.png"
-                 alt="Google Play'den indirin" class="store-badge-img" />
+
+          <!-- Google Play — inline SVG (Play üçgeni renkli) + iki satır metin -->
+          <a href="${androidUrl}" target="_blank" rel="noopener" class="store-badge-btn" aria-label="Google Play'den indirin">
+            <svg width="26" height="30" viewBox="0 0 32 36" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <defs>
+                <linearGradient id="pg1" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#00c1fe"/><stop offset="1" stop-color="#0087cc"/>
+                </linearGradient>
+                <linearGradient id="pg2" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#ffe000"/><stop offset="1" stop-color="#ffbd00"/>
+                </linearGradient>
+                <linearGradient id="pg3" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#ff3a44"/><stop offset="1" stop-color="#c31162"/>
+                </linearGradient>
+                <linearGradient id="pg4" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#00f076"/><stop offset="1" stop-color="#00a25b"/>
+                </linearGradient>
+              </defs>
+              <path d="M1.5 1.2 18.9 18 1.5 34.8c-.6-.4-1-1.2-1-2V3.2c0-.8.4-1.6 1-2z" fill="url(#pg1)"/>
+              <path d="M25.3 12.7 20.5 18l4.8 5.3 5.4-3c1.4-.8 1.4-2.9 0-3.7l-5.4-3z" fill="url(#pg2)"/>
+              <path d="M20.5 18 1.5 1.2c.6-.4 1.4-.5 2.1-.1l21.7 12.3-4.8 4.6z" fill="url(#pg3)"/>
+              <path d="M20.5 18 1.5 34.8c.6.4 1.4.5 2.1.1l21.7-12.3-4.8-4.6z" fill="url(#pg4)"/>
+            </svg>
+            <div>
+              <div class="top">Google Play'den</div>
+              <div class="bot">İndirin</div>
+            </div>
           </a>
         </div>
       </div>

@@ -528,11 +528,23 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       LEFT JOIN user_contacts uc ON uc.user_id = $3 AND uc.contact_phone_hash = u.phone_hash
       WHERE (l.user_id = ANY($1::uuid[]) OR l.id = ANY($4::uuid[]))
         AND l.user_id <> $3
-        -- Aktif ilanlar + son 7 gün içinde satılanlar (SATILDI etiketi ile görünür)
-        -- Ana feed ile tutarlı: kullanıcı "yeni satıldı" bilgisini de görebilsin
+        -- Ana feed ile tutarlı:
+        --   • Aktif ilanlar HER ZAMAN
+        --   • Sold ilanlar → max 7 gün + bu kullanıcı için ilk görmeden itibaren 24 saat
+        --     (24 saat sonra sold ilan gizli — kullanıcı yeni satışları bir kez görsün, sonra defter kapansın)
         AND (
           l.status = 'active'
-          OR (l.status = 'sold' AND l.sold_at IS NOT NULL AND l.sold_at > now() - interval '7 days')
+          OR (
+            l.status = 'sold'
+            AND l.sold_at IS NOT NULL
+            AND l.sold_at > now() - interval '7 days'
+            AND NOT EXISTS (
+              SELECT 1 FROM sold_listing_seen ss
+              WHERE ss.listing_id = l.id
+                AND ss.user_id = $3
+                AND ss.first_seen_at < now() - interval '24 hours'
+            )
+          )
         )
         AND l.admin_removed_at IS NULL
         AND l.created_at >= now() - ($2 || ' hours')::interval
@@ -581,6 +593,18 @@ router.get('/garage-sale', requireAuth, async (req, res, next) => {
       })
       // Hayalet ilanlar 2. derecede de görünür — sadece kimlik gizli. Ana feed ile tutarlı.
       ;
+
+    // Sold ilan tracking — bu feed'de görülen sold ilanları kaydet.
+    // İkinci gösterime kadar 24 saat sayacı başlar (ana feed ile aynı davranış).
+    const soldIdsInFeed = result.filter((r) => r.status === 'sold').map((r) => r.id);
+    if (soldIdsInFeed.length > 0) {
+      pool.query(
+        `INSERT INTO sold_listing_seen (listing_id, user_id)
+         SELECT unnest($1::uuid[]), $2
+         ON CONFLICT DO NOTHING`,
+        [soldIdsInFeed, req.userId]
+      ).catch((e) => console.error('[garage-sale] sold_seen track fail:', e.message));
+    }
 
     res.json({ listings: result, count: result.length, hours });
   } catch (err) {

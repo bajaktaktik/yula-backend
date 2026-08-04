@@ -618,11 +618,12 @@ SELECT p.id, v.name, v.slug, v.icon, v.ordering FROM (VALUES
   ('hobi-spor', 'Kış Sporları',             'kis-sporlari',         'snowflake',   7),
   ('hobi-spor', 'Koleksiyon & Antika',      'koleksiyon-antika',    'gem',         8),
 
-  -- Vasıta
-  ('vasita', 'Otomobil',                    'otomobil',             'car',         1),
-  ('vasita', 'Motosiklet',                  'motosiklet',           'motorcycle',  2),
-  ('vasita', 'Ticari Araç',                 'ticari-arac',          'truck',       3),
-  ('vasita', 'Yedek Parça & Aksesuar',      'yedek-parca',          'wrench',      4),
+  -- Vasıta — slug pattern Cat1.xlsx ile aynı olsun (parent_slug-child_slug)
+  -- ki xlsx re-import'unda mükerrer kayıt çıkmasın.
+  ('vasita', 'Otomobil',                    'vasita-otomobil',      'car',         1),
+  ('vasita', 'Motosiklet',                  'vasita-motosiklet',    'motorcycle',  2),
+  ('vasita', 'Ticari Araç',                 'vasita-ticari-arac',   'truck',       3),
+  ('vasita', 'Yedek Parça & Aksesuar',      'vasita-yedek-parca',   'wrench',      4),
 
   -- Emlak (2. seviye: gayrimenkul TÜRÜ; satılık/kiralık ilan attribute'u olarak tutulur)
   ('emlak', 'Konut',                        'konut',                'house',       1),
@@ -648,6 +649,76 @@ UPDATE categories
 SET parent_id = (SELECT id FROM categories WHERE slug = 'vasita' AND parent_id IS NULL),
     ordering = 1
 WHERE slug = 'otomobil' AND parent_id IS NULL;
+
+-- ────────────────────────────────────────────────────────────
+-- KALICI DEDUP: Vasıta altında iki 'Otomobil' / 'Motosiklet' vs.
+-- (schema.sql'in eski 'otomobil' slug'ı + Cat1.xlsx'in 'vasita-otomobil' slug'ı çakışıyordu)
+-- Doğru = 'vasita-*' slug'ları (yeni convention). Yanlış = kısa slug.
+-- İdempotent: sadece HER İKİ kayıt varsa merge yapar.
+-- ────────────────────────────────────────────────────────────
+
+-- 1) Otomobil altındaki markaları doğru parent'a taşı
+UPDATE categories SET parent_id = (SELECT id FROM categories WHERE slug = 'vasita-otomobil')
+WHERE parent_id = (SELECT id FROM categories WHERE slug = 'otomobil')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-otomobil');
+
+-- 2) User listings'i doğru kategoriye taşı
+UPDATE listings SET category_id = (SELECT id FROM categories WHERE slug = 'vasita-otomobil')
+WHERE category_id = (SELECT id FROM categories WHERE slug = 'otomobil')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-otomobil');
+
+-- 3) Store listings'i doğru kategoriye taşı
+UPDATE store_listings SET category_id = (SELECT id FROM categories WHERE slug = 'vasita-otomobil')
+WHERE category_id = (SELECT id FROM categories WHERE slug = 'otomobil')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-otomobil');
+
+-- 4) Mağazaların primary_category_id'sini de taşı
+UPDATE stores SET primary_category_id = (SELECT id FROM categories WHERE slug = 'vasita-otomobil')
+WHERE primary_category_id = (SELECT id FROM categories WHERE slug = 'otomobil')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-otomobil');
+
+-- 5) Yanlış slug'lı 'otomobil' kaydını sil
+DELETE FROM categories
+WHERE slug = 'otomobil'
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-otomobil');
+
+-- Motosiklet için aynı işlem
+UPDATE categories SET parent_id = (SELECT id FROM categories WHERE slug = 'vasita-motosiklet')
+WHERE parent_id = (SELECT id FROM categories WHERE slug = 'motosiklet')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-motosiklet');
+
+UPDATE listings SET category_id = (SELECT id FROM categories WHERE slug = 'vasita-motosiklet')
+WHERE category_id = (SELECT id FROM categories WHERE slug = 'motosiklet')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-motosiklet');
+
+UPDATE store_listings SET category_id = (SELECT id FROM categories WHERE slug = 'vasita-motosiklet')
+WHERE category_id = (SELECT id FROM categories WHERE slug = 'motosiklet')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-motosiklet');
+
+UPDATE stores SET primary_category_id = (SELECT id FROM categories WHERE slug = 'vasita-motosiklet')
+WHERE primary_category_id = (SELECT id FROM categories WHERE slug = 'motosiklet')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-motosiklet');
+
+DELETE FROM categories
+WHERE slug = 'motosiklet'
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-motosiklet');
+
+-- Ticari Araç ve Yedek Parça (aynı problem olma ihtimaline karşı)
+UPDATE listings SET category_id = (SELECT id FROM categories WHERE slug = 'vasita-ticari-arac')
+WHERE category_id = (SELECT id FROM categories WHERE slug = 'ticari-arac')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-ticari-arac');
+
+DELETE FROM categories
+WHERE slug = 'ticari-arac'
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-ticari-arac');
+
+UPDATE listings SET category_id = (SELECT id FROM categories WHERE slug = 'vasita-yedek-parca')
+WHERE category_id = (SELECT id FROM categories WHERE slug = 'yedek-parca')
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-yedek-parca');
+
+DELETE FROM categories
+WHERE slug = 'yedek-parca'
+  AND EXISTS (SELECT 1 FROM categories WHERE slug = 'vasita-yedek-parca');
 
 -- Emlak alt-alt kategorileri (3. seviye) — konut ve işyeri tipleri.
 -- İşlem tipi (satılık/kiralık) taşınmaz TÜRÜ değil, ilan attribute'udur (attributes.transaction_type).
