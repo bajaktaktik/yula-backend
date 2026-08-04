@@ -396,6 +396,23 @@ router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
       [req.storeId]
     );
     const p = profileRes.rows[0] || {};
+
+    // ─── PAZARLAMA HEDEFİ: kullanıcı istatistikleri (aggregate, PII yok) ───
+    // Toplam / aktif / cinsiyet dağılımı + mağazanın şehrindeki potansiyel müşteri sayısı
+    const userStats = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'active')::int AS total_active,
+         COUNT(*) FILTER (WHERE status = 'active' AND last_active_at >= now() - interval '30 days')::int AS active_30d,
+         COUNT(*) FILTER (WHERE status = 'active' AND last_active_at >= now() - interval '7 days')::int  AS active_7d,
+         COUNT(*) FILTER (WHERE status = 'active' AND gender = 'female')::int AS female,
+         COUNT(*) FILTER (WHERE status = 'active' AND gender = 'male')::int   AS male,
+         COUNT(*) FILTER (WHERE status = 'active' AND gender IS NULL)::int    AS gender_unknown,
+         COUNT(*) FILTER (WHERE status = 'active' AND created_at >= now() - interval '30 days')::int AS new_last_30d,
+         COUNT(*) FILTER (WHERE status = 'active' AND LOWER(location_city) = LOWER($1))::int AS same_city
+       FROM users`,
+      [p.location_city || '']
+    );
+    const u = userStats.rows[0];
     const fields = [
       { key: 'name',          label: 'Mağaza adı',          filled: !!p.name },
       { key: 'description',   label: 'Açıklama',            filled: !!(p.description && p.description.trim()) },
@@ -477,6 +494,17 @@ router.get('/me/summary', requireStoreAuth, async (req, res, next) => {
         filled: filledCount,
         total: totalCount,
         fields,
+      },
+      user_stats: {
+        total_active:     u.total_active || 0,
+        active_30d:       u.active_30d || 0,
+        active_7d:        u.active_7d || 0,
+        female:           u.female || 0,
+        male:             u.male || 0,
+        gender_unknown:   u.gender_unknown || 0,
+        new_last_30d:     u.new_last_30d || 0,
+        same_city:        u.same_city || 0,
+        store_city:       p.location_city || null,
       },
       suggestions,
       store_age_days: Math.floor((Date.now() - new Date(p.created_at).getTime()) / (86400 * 1000)),
@@ -1124,22 +1152,39 @@ router.post('/me/conversations/:id/messages', requireStoreAuth, async (req, res,
       [req.params.id]
     );
 
-    // Kullanıcıya push notification — async, response'u geciktirmez
+    // Kullanıcıya bildirim: hem in-app (Bildirimler ekranı) hem de push
+    const notifTitle = `💬 ${convInfo.store_name || 'Mağaza'}`;
+    const notifBody = value.content.length > 120 ? value.content.slice(0, 117) + '…' : value.content;
+    const notifPayload = {
+      title: notifTitle,
+      body: notifBody,
+      conversation_id: req.params.id,
+      store_id: req.storeId,
+      store_name: convInfo.store_name,
+      store_logo: convInfo.store_logo,
+      listing_id: convInfo.store_listing_id,
+      listing_title: convInfo.listing_title,
+    };
+
+    // In-app notifications tablosuna kaydet (Bildirimler sekmesinde görünsün)
+    try {
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, payload)
+         VALUES ($1, 'store_message', $2::jsonb)`,
+        [convInfo.user_id, JSON.stringify(notifPayload)]
+      );
+    } catch (e) {
+      console.warn('[store-msg-notif] insert fail:', e.message);
+    }
+
+    // Push notification — async, response'u geciktirmez
     (async () => {
       try {
         const push = require('../services/push');
         await push.sendToUser(convInfo.user_id, {
-          title: `💬 ${convInfo.store_name || 'Mağaza'}`,
-          body: value.content.length > 120 ? value.content.slice(0, 117) + '…' : value.content,
-          data: {
-            type: 'store_message',
-            conversation_id: req.params.id,
-            store_id: req.storeId,
-            store_name: convInfo.store_name,
-            store_logo: convInfo.store_logo,
-            listing_id: convInfo.store_listing_id,
-            listing_title: convInfo.listing_title,
-          },
+          title: notifTitle,
+          body: notifBody,
+          data: { type: 'store_message', ...notifPayload },
         });
       } catch (e) {
         console.warn('[store-msg-push] fail:', e.message);
@@ -1534,6 +1579,23 @@ router.post('/conversations/:id/read', requireUserAuth, async (req, res, next) =
        WHERE conversation_id = $1 AND sender_type = 'store' AND read_at IS NULL`,
       [req.params.id]
     );
+
+    // Bildirimler tablosundaki ilgili store_message notif'lerini de okundu işaretle
+    // — böylece profil badge ve Bildirimler sekmesi eş zamanlı güncellenir
+    try {
+      await pool.query(
+        `UPDATE notifications
+         SET read_at = now()
+         WHERE user_id = $1
+           AND type = 'store_message'
+           AND read_at IS NULL
+           AND payload->>'conversation_id' = $2`,
+        [req.userId, req.params.id]
+      );
+    } catch (e) {
+      console.warn('[store-msg-notif-read] fail:', e.message);
+    }
+
     res.json({ ok: true });
   } catch (err) {
     next(err);

@@ -739,7 +739,13 @@ router.get('/listings', requireAuth, requireAdmin, async (req, res, next) => {
     }
     if (category) {
       params.push(parseInt(category, 10));
-      conds.push(`l.category_id = $${params.length}`);
+      conds.push(`l.category_id IN (
+        WITH RECURSIVE sub AS (
+          SELECT id FROM categories WHERE id = $${params.length}
+          UNION ALL
+          SELECT c.id FROM categories c JOIN sub ON c.parent_id = sub.id
+        ) SELECT id FROM sub
+      )`);
     }
     if (city) {
       params.push(city);
@@ -1986,19 +1992,34 @@ router.delete('/stores/:id/purge', requireAuth, requireAdmin, async (req, res, n
 // MAĞAZA İLAN ONAY KUYRUĞU
 // ═══════════════════════════════════════════════════════════════════
 
-// GET /admin/store-listings?status=pending|active|rejected|all
+// GET /admin/store-listings?status=pending|active|rejected|all&category=<id>
 router.get('/store-listings', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status || 'pending').toString();
     const allowed = new Set(['pending', 'active', 'rejected', 'all']);
     if (!allowed.has(status)) return res.status(400).json({ error: 'invalid_status' });
 
-    let where = 'WHERE l.admin_removed_at IS NULL';
-    if (status === 'pending')       where += " AND l.status = 'pending'";
-    else if (status === 'active')   where += " AND l.status = 'active'";
-    else if (status === 'rejected') where = 'WHERE l.admin_removed_at IS NOT NULL';
-    // 'all' → sadece admin_removed_at IS NULL değil, hepsi
-    if (status === 'all') where = '';
+    const categoryId = req.query.category ? parseInt(String(req.query.category), 10) : null;
+    const conds = [];
+    const params = [];
+
+    if (status === 'pending')       conds.push("l.status = 'pending' AND l.admin_removed_at IS NULL");
+    else if (status === 'active')   conds.push("l.status = 'active' AND l.admin_removed_at IS NULL");
+    else if (status === 'rejected') conds.push('l.admin_removed_at IS NOT NULL');
+    // 'all' → koşul yok
+
+    if (categoryId) {
+      params.push(categoryId);
+      conds.push(`l.category_id IN (
+        WITH RECURSIVE sub AS (
+          SELECT id FROM categories WHERE id = $${params.length}
+          UNION ALL
+          SELECT c.id FROM categories c JOIN sub ON c.parent_id = sub.id
+        ) SELECT id FROM sub
+      )`);
+    }
+
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
     const { rows } = await pool.query(
       `SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
@@ -2015,7 +2036,8 @@ router.get('/store-listings', requireAuth, requireAdmin, async (req, res, next) 
        LEFT JOIN categories cat ON cat.id = l.category_id
        ${where}
        ORDER BY l.created_at DESC
-       LIMIT 200`
+       LIMIT 200`,
+      params
     );
 
     const counts = await pool.query(
@@ -2388,6 +2410,83 @@ router.post('/broadcast/campaign', requireAuth, requireAdmin, async (req, res, n
 
     console.log(`[admin] campaign audience=${value.audience} sent=${total} by=${req.userId}`);
     res.json({ ok: true, sent: total, audience: value.audience });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// KATEGORİLER — Admin görünümü (user + store listing sayıları)
+// ═══════════════════════════════════════════════════════════════
+// GET /admin/categories/stats
+// Kategori ağacı + her düğüm için:
+//   - user_count:  o kategori altındaki (recursive) aktif user listing sayısı
+//   - store_count: o kategori altındaki (recursive) aktif store listing sayısı
+router.get('/categories/stats', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const { rows: cats } = await pool.query(
+      `SELECT id, parent_id, name, slug, icon, ordering
+       FROM categories
+       ORDER BY parent_id NULLS FIRST, ordering, name`
+    );
+
+    // Doğrudan (kendi) sayılar — user listings (aktif + removed değil)
+    const { rows: userDirect } = await pool.query(
+      `SELECT category_id, COUNT(*)::int AS n
+       FROM listings
+       WHERE status = 'active' AND admin_removed_at IS NULL AND category_id IS NOT NULL
+       GROUP BY category_id`
+    );
+    const userMap = new Map(userDirect.map((r) => [r.category_id, r.n]));
+
+    // Doğrudan sayılar — store listings (onaylı mağaza + aktif)
+    const { rows: storeDirect } = await pool.query(
+      `SELECT l.category_id, COUNT(*)::int AS n
+       FROM store_listings l
+       JOIN stores s ON s.id = l.store_id
+       WHERE l.status = 'active'
+         AND l.admin_removed_at IS NULL
+         AND s.is_admin_approved = true
+         AND s.deleted_at IS NULL
+         AND l.category_id IS NOT NULL
+       GROUP BY l.category_id`
+    );
+    const storeMap = new Map(storeDirect.map((r) => [r.category_id, r.n]));
+
+    // Ağaç kur
+    const byId = new Map();
+    const roots = [];
+    cats.forEach((c) => byId.set(c.id, {
+      ...c,
+      children: [],
+      user_count: userMap.get(c.id) || 0,
+      store_count: storeMap.get(c.id) || 0,
+    }));
+    cats.forEach((c) => {
+      const node = byId.get(c.id);
+      if (c.parent_id) byId.get(c.parent_id)?.children.push(node);
+      else roots.push(node);
+    });
+
+    // Recursive toplama (kendi + tüm alt kategoriler)
+    function recur(node) {
+      let u = node.user_count;
+      let s = node.store_count;
+      for (const ch of node.children) {
+        const [cu, cs] = recur(ch);
+        u += cu;
+        s += cs;
+      }
+      node.user_count = u;
+      node.store_count = s;
+      return [u, s];
+    }
+    roots.forEach(recur);
+
+    const totalUser = Array.from(userMap.values()).reduce((a, b) => a + b, 0);
+    const totalStore = Array.from(storeMap.values()).reduce((a, b) => a + b, 0);
+
+    res.json({ tree: roots, total_user: totalUser, total_store: totalStore });
   } catch (err) {
     next(err);
   }

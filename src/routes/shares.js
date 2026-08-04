@@ -356,7 +356,8 @@ function renderPreviewHTML(l, token) {
       background: rgba(255,255,255,0.15); color: white;
       border: 1.5px solid rgba(255,255,255,0.4);
     }
-    .store-row { display: flex; gap: 10px; justify-content: center; margin-top: 8px; }
+    .store-row { display: flex; gap: 10px; justify-content: center; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+    .store-badge-img { height: 48px; width: auto; display: block; }
     .store-badge {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 10px 14px; background: white; color: #0f172a;
@@ -404,8 +405,14 @@ function renderPreviewHTML(l, token) {
         <div class="cta-title">Bu ilanla ilgileniyor musun?</div>
         <div class="cta-desc">Abadan'a kayıt ol, satıcıyla direkt mesajlaş.<br />Rehberdeki tanıdıklarınla güvenli alışveriş.</div>
         <div class="store-row">
-          <a href="${iosUrl}" class="store-badge">📱 App Store</a>
-          <a href="${androidUrl}" class="store-badge">▶️ Google Play</a>
+          <a href="${iosUrl}" target="_blank" rel="noopener" aria-label="App Store'dan İndir">
+            <img src="https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/tr-tr?size=250x83"
+                 alt="App Store'dan İndir" class="store-badge-img" />
+          </a>
+          <a href="${androidUrl}" target="_blank" rel="noopener" aria-label="Google Play'den indirin">
+            <img src="https://play.google.com/intl/en_us/badges/static/images/badges/tr_badge_web_generic.png"
+                 alt="Google Play'den indirin" class="store-badge-img" />
+          </a>
         </div>
       </div>
     </div>
