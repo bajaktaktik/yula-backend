@@ -576,10 +576,12 @@ router.post('/me/listings', requireStoreAuth, async (req, res, next) => {
 
     await client.query('BEGIN');
 
+    // Yeni ilan → 'pending' status ile başlar (admin onayı bekler).
+    // Onaylandığında status='active' olur, public feed'de görünür.
     const ins = await client.query(
       `INSERT INTO store_listings
-         (store_id, title, description, category_id, price, currency, is_negotiable, location_city, idempotency_key, attributes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+         (store_id, title, description, category_id, price, currency, is_negotiable, location_city, idempotency_key, attributes, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, 'pending')
        RETURNING id`,
       [req.storeId, value.title, value.description, value.category_id || null,
        value.price, value.currency, value.is_negotiable,
@@ -677,6 +679,78 @@ router.delete('/me/listings/:id', requireStoreAuth, async (req, res, next) => {
     res.json({ ok: true });
   } catch (err) {
     next(err);
+  }
+});
+
+// PUT /stores/me/listings/:id — ilan içeriğini düzenle
+// Değişiklikten sonra status='pending' olur, admin tekrar onaylamalı.
+const updateListingSchema = Joi.object({
+  title:         Joi.string().min(1).max(200).trim().default('İsimsiz İlan'),
+  description:   Joi.string().max(4000).trim().allow('').default(''),
+  category_id:   Joi.number().integer().positive().optional().allow(null),
+  price:         Joi.number().min(0).max(999999999).default(0),
+  is_negotiable: Joi.boolean().default(false),
+  location_city: Joi.string().max(80).trim().allow('').optional(),
+  photos:        Joi.array().items(Joi.string().uri().max(500)).max(8).default([]),
+  attributes:    Joi.object().pattern(Joi.string(), Joi.alternatives(
+    Joi.string().allow(''), Joi.number(), Joi.boolean(), Joi.array().items(Joi.string())
+  )).default({}),
+});
+
+router.put('/me/listings/:id', requireStoreAuth, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { value, error } = updateListingSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Ownership + var mı kontrol
+    const check = await client.query(
+      'SELECT id FROM store_listings WHERE id = $1 AND store_id = $2',
+      [req.params.id, req.storeId]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    await client.query('BEGIN');
+
+    // İçerik güncelle + status='pending' (admin tekrar onaylamalı)
+    // admin_removed_at NULL — eski red kayıtları temizlensin (yeni düzenleme = yeni değerlendirme)
+    await client.query(
+      `UPDATE store_listings
+       SET title = $1, description = $2, category_id = $3, price = $4,
+           is_negotiable = $5, location_city = $6, attributes = $7::jsonb,
+           status = 'pending',
+           admin_removed_at = NULL, admin_removal_reason = NULL,
+           updated_at = now()
+       WHERE id = $8 AND store_id = $9`,
+      [
+        value.title, value.description, value.category_id || null, value.price,
+        value.is_negotiable, value.location_city || null,
+        JSON.stringify(value.attributes || {}),
+        req.params.id, req.storeId,
+      ]
+    );
+
+    // Fotolar: eski kayıtları sil, yenileri ekle (kolay ve tutarlı yaklaşım)
+    // R2 fotoları temizlemez — eski URL'ler R2'de kalır ama DB bağlantısı kesilir
+    await client.query('DELETE FROM store_listing_photos WHERE listing_id = $1', [req.params.id]);
+    if (value.photos.length > 0) {
+      for (let i = 0; i < value.photos.length; i++) {
+        await client.query(
+          `INSERT INTO store_listing_photos (listing_id, url, ordering) VALUES ($1, $2, $3)`,
+          [req.params.id, value.photos[i], i]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    console.log(`[store-listing-update] store=${req.storeId} id=${req.params.id} → pending`);
+    res.json({ ok: true, id: req.params.id, status: 'pending' });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[store-listing-update] fail:', err.message);
+    next(err);
+  } finally {
+    client.release();
   }
 });
 
@@ -1254,6 +1328,173 @@ router.get('/listings-public/:id', async (req, res, next) => {
     res.json({ listing: r.rows[0] });
   } catch (err) {
     console.error('[store-listing-public-detail] fail:', err.message);
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// KULLANICI-MAĞAZA CHAT — user auth
+// Kullanıcı bir mağazaya (opsiyonel: belirli bir ilan üzerinden) chat başlatır.
+// ═══════════════════════════════════════════════════════════
+
+const { requireAuth: requireUserAuth } = require('../auth/middleware');
+
+// POST /stores/:storeId/conversations — chat başlat veya mevcutu al
+// Body: { store_listing_id?: string }
+router.post('/:storeId/conversations', requireUserAuth, async (req, res, next) => {
+  try {
+    const storeId = req.params.storeId;
+    const listingId = req.body?.store_listing_id || null;
+
+    // Mağaza var + onaylı + silinmemiş mi
+    const storeCheck = await pool.query(
+      `SELECT id FROM stores
+       WHERE id = $1 AND is_admin_approved = true AND deleted_at IS NULL`,
+      [storeId]
+    );
+    if (storeCheck.rows.length === 0) return res.status(404).json({ error: 'store_not_found' });
+
+    // Eğer listing_id verildiyse doğrula (o mağazanın ilanı mı)
+    if (listingId) {
+      const listingCheck = await pool.query(
+        `SELECT id FROM store_listings
+         WHERE id = $1 AND store_id = $2 AND status = 'active' AND admin_removed_at IS NULL`,
+        [listingId, storeId]
+      );
+      if (listingCheck.rows.length === 0) return res.status(404).json({ error: 'listing_not_found' });
+    }
+
+    // Var olan konuşma? (aynı store + user + listing)
+    const existing = await pool.query(
+      `SELECT id FROM store_conversations
+       WHERE store_id = $1 AND user_id = $2
+         AND (store_listing_id = $3 OR (store_listing_id IS NULL AND $3::uuid IS NULL))
+       LIMIT 1`,
+      [storeId, req.userId, listingId]
+    );
+    if (existing.rows.length > 0) {
+      return res.json({ conversation: { id: existing.rows[0].id, store_id: storeId, store_listing_id: listingId } });
+    }
+
+    // Yeni konuşma
+    const ins = await pool.query(
+      `INSERT INTO store_conversations (store_id, user_id, store_listing_id)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [storeId, req.userId, listingId]
+    );
+    res.status(201).json({ conversation: { id: ins.rows[0].id, store_id: storeId, store_listing_id: listingId } });
+  } catch (err) {
+    console.error('[user-store-conv-create] fail:', err.message);
+    next(err);
+  }
+});
+
+// GET /stores/conversations — kullanıcının mağaza konuşmaları
+router.get('/conversations', requireUserAuth, async (req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT
+         c.id, c.store_id, c.store_listing_id, c.last_message_at, c.created_at,
+         s.name AS store_name, s.logo_url AS store_logo,
+         l.title AS listing_title,
+         (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+          WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS listing_cover,
+         (SELECT content FROM store_messages m WHERE m.conversation_id = c.id
+          ORDER BY m.sent_at DESC LIMIT 1) AS last_message,
+         (SELECT sender_type FROM store_messages m WHERE m.conversation_id = c.id
+          ORDER BY m.sent_at DESC LIMIT 1) AS last_sender_type,
+         (SELECT COUNT(*)::int FROM store_messages m
+          WHERE m.conversation_id = c.id
+            AND m.sender_type = 'store'
+            AND m.read_at IS NULL) AS unread_count
+       FROM store_conversations c
+       JOIN stores s ON s.id = c.store_id
+       LEFT JOIN store_listings l ON l.id = c.store_listing_id
+       WHERE c.user_id = $1
+         AND EXISTS (SELECT 1 FROM store_messages m WHERE m.conversation_id = c.id)
+       ORDER BY c.last_message_at DESC NULLS LAST`,
+      [req.userId]
+    );
+    res.json({ conversations: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /stores/conversations/:id/messages
+router.get('/conversations/:id/messages', requireUserAuth, async (req, res, next) => {
+  try {
+    const check = await pool.query(
+      'SELECT id FROM store_conversations WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const { rows } = await pool.query(
+      `SELECT id, sender_type, sender_id, content, sent_at, read_at
+       FROM store_messages
+       WHERE conversation_id = $1
+       ORDER BY sent_at ASC
+       LIMIT 500`,
+      [req.params.id]
+    );
+    res.json({ messages: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /stores/conversations/:id/messages — kullanıcı mesaj yazar
+const userSendMsgSchema = Joi.object({
+  content: Joi.string().min(1).max(2000).trim().required(),
+});
+router.post('/conversations/:id/messages', requireUserAuth, async (req, res, next) => {
+  try {
+    const { value, error } = userSendMsgSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const check = await pool.query(
+      'SELECT id, store_id FROM store_conversations WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    const ins = await pool.query(
+      `INSERT INTO store_messages (conversation_id, sender_type, sender_id, content)
+       VALUES ($1, 'user', $2, $3)
+       RETURNING id, sender_type, sender_id, content, sent_at`,
+      [req.params.id, req.userId, value.content]
+    );
+
+    await pool.query(
+      'UPDATE store_conversations SET last_message_at = now() WHERE id = $1',
+      [req.params.id]
+    );
+
+    res.status(201).json({ message: ins.rows[0] });
+  } catch (err) {
+    console.error('[user-store-msg-send] fail:', err.message);
+    next(err);
+  }
+});
+
+// POST /stores/conversations/:id/read — mağaza mesajlarını okundu işaretle
+router.post('/conversations/:id/read', requireUserAuth, async (req, res, next) => {
+  try {
+    const check = await pool.query(
+      'SELECT id FROM store_conversations WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (check.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    await pool.query(
+      `UPDATE store_messages SET read_at = now()
+       WHERE conversation_id = $1 AND sender_type = 'store' AND read_at IS NULL`,
+      [req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
     next(err);
   }
 });

@@ -1983,6 +1983,156 @@ router.delete('/stores/:id/purge', requireAuth, requireAdmin, async (req, res, n
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// MAĞAZA İLAN ONAY KUYRUĞU
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /admin/store-listings?status=pending|active|rejected|all
+router.get('/store-listings', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const status = (req.query.status || 'pending').toString();
+    const allowed = new Set(['pending', 'active', 'rejected', 'all']);
+    if (!allowed.has(status)) return res.status(400).json({ error: 'invalid_status' });
+
+    let where = 'WHERE l.admin_removed_at IS NULL';
+    if (status === 'pending')       where += " AND l.status = 'pending'";
+    else if (status === 'active')   where += " AND l.status = 'active'";
+    else if (status === 'rejected') where = 'WHERE l.admin_removed_at IS NOT NULL';
+    // 'all' → sadece admin_removed_at IS NULL değil, hepsi
+    if (status === 'all') where = '';
+
+    const { rows } = await pool.query(
+      `SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
+              l.location_city, l.status, l.attributes, l.created_at,
+              l.admin_removed_at, l.admin_removal_reason,
+              l.store_id,
+              s.name AS store_name, s.email AS store_email, s.logo_url AS store_logo,
+              cat.name AS category_name,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+               WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT COUNT(*)::int FROM store_listing_photos p WHERE p.listing_id = l.id) AS photo_count
+       FROM store_listings l
+       JOIN stores s ON s.id = l.store_id
+       LEFT JOIN categories cat ON cat.id = l.category_id
+       ${where}
+       ORDER BY l.created_at DESC
+       LIMIT 200`
+    );
+
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'pending' AND admin_removed_at IS NULL)::int AS pending,
+         COUNT(*) FILTER (WHERE status = 'active' AND admin_removed_at IS NULL)::int  AS active,
+         COUNT(*) FILTER (WHERE admin_removed_at IS NOT NULL)::int                    AS rejected,
+         COUNT(*)::int                                                                 AS all
+       FROM store_listings`
+    );
+
+    res.json({ listings: rows, count: rows.length, status, counts: counts.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /admin/store-listings/:id/approve
+router.post('/store-listings/:id/approve', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `UPDATE store_listings
+       SET status = 'active', admin_removed_at = NULL, admin_removal_reason = NULL, updated_at = now()
+       WHERE id = $1
+       RETURNING id, title, store_id`,
+      [req.params.id]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    // Audit log
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_listing_approve', 'store_listing', $2, NULL)`,
+      [req.userId, req.params.id]
+    ).catch(() => {});
+
+    // Mağazaya email
+    (async () => {
+      try {
+        const emailSvc = require('../services/email');
+        const storeInfo = await pool.query('SELECT email, name FROM stores WHERE id = $1', [r.rows[0].store_id]);
+        if (storeInfo.rows[0]) {
+          await emailSvc.sendEmail({
+            to: storeInfo.rows[0].email,
+            subject: '[Abadan] İlanınız onaylandı',
+            html: `<p>Merhaba ${storeInfo.rows[0].name},</p>
+              <p>"<b>${r.rows[0].title}</b>" ilanınız onaylandı ve yayına alındı.</p>
+              <p>—<br />Abadan</p>`,
+            text: `Merhaba ${storeInfo.rows[0].name},\n\n"${r.rows[0].title}" ilanınız onaylandı ve yayına alındı.\n\n—\nAbadan`,
+          });
+        }
+      } catch (e) {
+        console.warn('[store-listing-approve] mail fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[store-listing-approve] fail:', err.message);
+    next(err);
+  }
+});
+
+// POST /admin/store-listings/:id/reject
+// Body: { reason }
+router.post('/store-listings/:id/reject', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const reason = (req.body?.reason || '').toString().trim();
+    if (reason.length < 3 || reason.length > 500) {
+      return res.status(400).json({ error: 'reason_required' });
+    }
+
+    const r = await pool.query(
+      `UPDATE store_listings
+       SET admin_removed_at = now(), admin_removal_reason = $2, updated_at = now()
+       WHERE id = $1
+       RETURNING id, title, store_id`,
+      [req.params.id, reason]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+
+    await pool.query(
+      `INSERT INTO admin_actions (admin_id, action, target_type, target_id, reason)
+       VALUES ($1, 'store_listing_reject', 'store_listing', $2, $3)`,
+      [req.userId, req.params.id, reason]
+    ).catch(() => {});
+
+    // Mağazaya email
+    (async () => {
+      try {
+        const emailSvc = require('../services/email');
+        const storeInfo = await pool.query('SELECT email, name FROM stores WHERE id = $1', [r.rows[0].store_id]);
+        if (storeInfo.rows[0]) {
+          await emailSvc.sendEmail({
+            to: storeInfo.rows[0].email,
+            subject: '[Abadan] İlanınız onaylanmadı',
+            html: `<p>Merhaba ${storeInfo.rows[0].name},</p>
+              <p>"<b>${r.rows[0].title}</b>" ilanınız onaylanmadı.</p>
+              <p><b>Sebep:</b> ${reason}</p>
+              <p>Düzenleyip yeniden gönderebilirsiniz.</p>
+              <p>—<br />Abadan</p>`,
+            text: `Merhaba ${storeInfo.rows[0].name},\n\n"${r.rows[0].title}" ilanınız onaylanmadı.\nSebep: ${reason}\n\n—\nAbadan`,
+          });
+        }
+      } catch (e) {
+        console.warn('[store-listing-reject] mail fail:', e.message);
+      }
+    })();
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[store-listing-reject] fail:', err.message);
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // GROWTH — Share leaderboard
 // ═══════════════════════════════════════════════════════════════════
 

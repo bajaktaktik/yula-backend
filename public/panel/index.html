@@ -106,6 +106,10 @@
         <span>🏪</span> Mağazalar
         <span id="stores-badge" class="hidden ml-auto bg-orange-500 text-xs px-2 py-0.5 rounded-full">0</span>
       </button>
+      <button data-tab="store-listings" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+        <span>📦</span> Mağaza İlan Onayı
+        <span id="store-listings-badge" class="hidden ml-auto bg-red-600 text-xs px-2 py-0.5 rounded-full">0</span>
+      </button>
       <button data-tab="banned" class="tab-btn w-full text-left px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
         <span>🚫</span> Yasak Kelimeler
       </button>
@@ -318,6 +322,7 @@ function switchTab(tab) {
     reports: 'Şikayetler',
     ghosts: 'Hayalet Onayı',
     stores: 'Mağazalar',
+    'store-listings': 'Mağaza İlan Onayı',
     banned: 'Yasak Kelimeler',
     system: 'Sistem İzleme',
     ops: 'Operasyon',
@@ -330,6 +335,7 @@ function switchTab(tab) {
   if (tab === 'reports') renderReports();
   if (tab === 'ghosts') renderGhosts();
   if (tab === 'stores') renderStores();
+  if (tab === 'store-listings') renderStoreListings();
   if (tab === 'banned') renderBanned();
   if (tab === 'system') renderSystem();
   if (tab === 'ops') renderOps();
@@ -3682,6 +3688,148 @@ async function rejectEmailChange(id) {
       body: JSON.stringify({ reason: reason.trim() }),
     });
     renderStores();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+// ─── Mağaza İlan Onay Kuyruğu ───
+let _storeListingStatus = 'pending';
+
+async function renderStoreListings() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div class="p-16 flex justify-center"><div class="spinner"></div></div>';
+  try {
+    const data = await apiJson('/admin/store-listings?status=' + _storeListingStatus);
+    const items = data.listings || [];
+    const counts = data.counts || { pending: 0, active: 0, rejected: 0, all: 0 };
+
+    // Sidebar badge
+    const badge = document.getElementById('store-listings-badge');
+    if (badge) {
+      if (counts.pending > 0) {
+        badge.textContent = counts.pending;
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+
+    const chip = (key, label, count, color) => `
+      <button onclick="setStoreListingStatus('${key}')"
+        class="px-3 py-1.5 text-xs font-semibold rounded-full transition-colors ${
+          _storeListingStatus === key ? color + ' text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+        }">
+        ${label} <span class="ml-1 opacity-80">${count}</span>
+      </button>`;
+
+    let html = `
+      <div class="mb-4 flex flex-wrap gap-2">
+        ${chip('pending', '⏳ Onay Bekleyen', counts.pending, 'bg-yellow-500')}
+        ${chip('active', '✓ Aktif Yayında', counts.active, 'bg-green-600')}
+        ${chip('rejected', '✗ Reddedilen', counts.rejected, 'bg-red-600')}
+        ${chip('all', '🌐 Tümü', counts.all, 'bg-slate-700')}
+      </div>
+    `;
+
+    if (items.length === 0) {
+      html += `<div class="p-16 text-center text-slate-500">
+        <div class="text-5xl mb-3">📦</div>
+        <div class="text-lg font-semibold">Bu durumda ilan yok</div>
+      </div>`;
+      c.innerHTML = html;
+      return;
+    }
+
+    html += `<div class="mb-3 text-sm text-slate-600"><strong>${items.length}</strong> ilan listeleniyor.</div>
+      <div class="space-y-3">
+      ${items.map(l => storeListingCard(l)).join('')}
+      </div>`;
+    c.innerHTML = html;
+  } catch (err) {
+    c.innerHTML = '<div class="text-red-600 p-4">Yüklenemedi: ' + err.message + '</div>';
+  }
+}
+
+function setStoreListingStatus(status) {
+  _storeListingStatus = status;
+  renderStoreListings();
+}
+
+function storeListingCard(l) {
+  const statusChip = l.status === 'pending'
+    ? '<span class="text-[10px] bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded font-bold uppercase">Onay Bekliyor</span>'
+    : l.admin_removed_at
+      ? '<span class="text-[10px] bg-red-100 text-red-800 px-1.5 py-0.5 rounded font-bold uppercase">Reddedildi</span>'
+      : l.status === 'active'
+        ? '<span class="text-[10px] bg-green-100 text-green-800 px-1.5 py-0.5 rounded font-bold uppercase">Aktif</span>'
+        : '<span class="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-bold uppercase">' + escapeHtml(l.status) + '</span>';
+  return `
+    <div class="bg-white border border-slate-200 rounded-lg p-4 flex gap-4">
+      ${l.cover_photo
+        ? `<img src="${l.cover_photo}" class="w-24 h-24 object-cover rounded-lg flex-shrink-0" />`
+        : `<div class="w-24 h-24 bg-slate-100 rounded-lg flex items-center justify-center text-slate-400 flex-shrink-0">📦</div>`
+      }
+      <div class="flex-1 min-w-0">
+        <div class="flex items-start justify-between gap-2 mb-1">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <div class="font-bold text-slate-900 truncate">${escapeHtml(l.title)}</div>
+              ${statusChip}
+            </div>
+            <div class="text-xs text-slate-500 mt-0.5">
+              🏪 <b>${escapeHtml(l.store_name || 'Mağaza')}</b> · ${escapeHtml(l.category_name || '—')}
+              ${l.location_city ? ' · 📍 ' + escapeHtml(l.location_city) : ''}
+            </div>
+          </div>
+          <div class="text-right flex-shrink-0">
+            <div class="text-lg font-bold text-blue-700">${Number(l.price).toLocaleString('tr-TR')} ₺</div>
+            <div class="text-xs text-slate-400">${new Date(l.created_at).toLocaleString('tr-TR')}</div>
+          </div>
+        </div>
+        <div class="text-sm text-slate-700 mt-2 line-clamp-2">${escapeHtml(l.description || '(açıklama yok)')}</div>
+        ${l.admin_removal_reason ? `<div class="mt-2 text-xs bg-red-50 border-l-2 border-red-400 pl-2 py-1 text-red-800">
+          <strong>Red sebebi:</strong> ${escapeHtml(l.admin_removal_reason)}
+        </div>` : ''}
+        <div class="flex gap-2 mt-3 flex-wrap">
+          ${l.status === 'pending' ? `
+            <button onclick="storeListingApprove('${l.id}')" class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">✓ Onayla</button>
+            <button onclick="storeListingReject('${l.id}')" class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">✗ Reddet</button>
+          ` : ''}
+          ${l.status === 'active' && !l.admin_removed_at ? `
+            <button onclick="storeListingReject('${l.id}')" class="px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded">⚠️ Yayından Kaldır</button>
+          ` : ''}
+          ${l.admin_removed_at ? `
+            <button onclick="storeListingApprove('${l.id}')" class="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded">↻ Tekrar Onayla</button>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function storeListingApprove(id) {
+  if (!confirm('Bu ilanı onaylıyor musun? Mağaza sahibine bilgilendirme maili gider.')) return;
+  try {
+    await apiJson(`/admin/store-listings/${id}/approve`, { method: 'POST' });
+    renderStoreListings();
+  } catch (err) {
+    alert('Hata: ' + err.message);
+  }
+}
+
+async function storeListingReject(id) {
+  const reason = prompt('Red/kaldırma sebebi (mağazaya mail ile iletilir, min 3 karakter):');
+  if (!reason || reason.trim().length < 3) {
+    if (reason !== null) alert('En az 3 karakter olmalı.');
+    return;
+  }
+  try {
+    await apiJson(`/admin/store-listings/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    renderStoreListings();
   } catch (err) {
     alert('Hata: ' + err.message);
   }
