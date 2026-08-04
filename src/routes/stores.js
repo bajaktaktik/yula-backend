@@ -1776,6 +1776,66 @@ router.post('/me/conversations/:convId/mark-purchase', requireStoreAuth, async (
   }
 });
 
+// GET /stores/me/purchases — mağazanın satış arşivi
+// Query: ?status=all|confirmed|pending|rejected  (default: all)
+// Kampanya push altyapısı — henüz bildirim gönderilmiyor, sadece liste.
+router.get('/me/purchases', requireStoreAuth, async (req, res, next) => {
+  try {
+    const status = String(req.query.status || 'all').trim();
+    const allowed = new Set(['all', 'confirmed', 'pending', 'rejected']);
+    if (!allowed.has(status)) return res.status(400).json({ error: 'invalid_status' });
+
+    const filters = ['sp.store_id = $1'];
+    const params = [req.storeId];
+    if (status !== 'all') {
+      params.push(status);
+      filters.push(`sp.status = $${params.length}`);
+    }
+
+    const { rows } = await pool.query(
+      `SELECT
+         sp.id, sp.status, sp.store_listing_id, sp.conversation_id,
+         sp.initiated_at, sp.confirmed_at, sp.rejected_at,
+         u.id AS user_id,
+         u.display_name AS user_name,
+         u.avatar_url AS user_avatar,
+         u.location_city AS user_city,
+         l.title AS listing_title, l.price AS listing_price,
+         (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
+          WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS listing_cover
+       FROM store_purchases sp
+       JOIN users u ON u.id = sp.user_id
+       LEFT JOIN store_listings l ON l.id = sp.store_listing_id
+       WHERE ${filters.join(' AND ')}
+       ORDER BY COALESCE(sp.confirmed_at, sp.initiated_at) DESC
+       LIMIT 500`,
+      params
+    );
+
+    // Sayaçlar (tüm durumlar için)
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'confirmed')::int AS confirmed,
+         COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+         COUNT(*) FILTER (WHERE status = 'rejected')::int AS rejected,
+         COUNT(*)::int AS total,
+         COUNT(DISTINCT user_id) FILTER (WHERE status = 'confirmed')::int AS unique_customers
+       FROM store_purchases
+       WHERE store_id = $1`,
+      [req.storeId]
+    );
+
+    res.json({
+      purchases: rows,
+      counts: counts.rows[0],
+      status,
+    });
+  } catch (err) {
+    console.error('[me/purchases] fail:', err.message);
+    next(err);
+  }
+});
+
 // POST /stores/purchases/:id/confirm — kullanıcı satın almayı onaylar
 router.post('/purchases/:id/confirm', requireUserAuth, async (req, res, next) => {
   try {
@@ -1790,12 +1850,12 @@ router.post('/purchases/:id/confirm', requireUserAuth, async (req, res, next) =>
       return res.status(404).json({ error: 'not_found_or_not_pending' });
     }
 
-    // Bu bildirimi de okundu yap (varsa)
+    // Onay bildirimi tamamlandı → bildirim listesinden sil (kalıcı)
     try {
       await pool.query(
-        `UPDATE notifications SET read_at = now()
+        `DELETE FROM notifications
          WHERE user_id = $1 AND type = 'store_purchase_request'
-           AND payload->>'purchase_id' = $2 AND read_at IS NULL`,
+           AND payload->>'purchase_id' = $2`,
         [req.userId, req.params.id]
       );
     } catch (_) {}
@@ -1817,11 +1877,12 @@ router.post('/purchases/:id/reject', requireUserAuth, async (req, res, next) => 
     if (r.rows.length === 0) {
       return res.status(404).json({ error: 'not_found_or_not_pending' });
     }
+    // Reddetti → bildirim listesinden sil
     try {
       await pool.query(
-        `UPDATE notifications SET read_at = now()
+        `DELETE FROM notifications
          WHERE user_id = $1 AND type = 'store_purchase_request'
-           AND payload->>'purchase_id' = $2 AND read_at IS NULL`,
+           AND payload->>'purchase_id' = $2`,
         [req.userId, req.params.id]
       );
     } catch (_) {}
