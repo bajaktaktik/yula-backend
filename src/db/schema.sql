@@ -486,6 +486,32 @@ CREATE TABLE IF NOT EXISTS store_conversations (
 CREATE INDEX IF NOT EXISTS idx_store_conv_store ON store_conversations(store_id, last_message_at DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_store_conv_user  ON store_conversations(user_id,  last_message_at DESC NULLS LAST);
 
+-- Kullanıcı sohbeti kendi listesinden gizlediğinde bu damgalanır.
+-- Mağaza yeni mesaj atarsa NULL'a çekilir → sohbet kullanıcıya yeniden görünür.
+ALTER TABLE store_conversations ADD COLUMN IF NOT EXISTS user_hidden_at TIMESTAMPTZ;
+
+-- ─────────────────────────────────────────────────────────
+-- store_purchases — mağaza satın alma onay akışı
+-- Mağaza chat'ten "kullanıcı satın aldı" işaretler → pending kayıt oluşur.
+-- Kullanıcıya bildirim gider, onaylar (confirmed) veya reddeder (rejected).
+-- Sosyal kanıt: mağaza detayında "kaç kişi satın aldı + hangi tanıdıkların" gösterilir.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS store_purchases (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id           UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  user_id            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  store_listing_id   UUID REFERENCES store_listings(id) ON DELETE SET NULL,
+  conversation_id    UUID REFERENCES store_conversations(id) ON DELETE SET NULL,
+  status             TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending','confirmed','rejected')),
+  initiated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  confirmed_at       TIMESTAMPTZ,
+  rejected_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_store_purchases_store  ON store_purchases(store_id, status);
+CREATE INDEX IF NOT EXISTS idx_store_purchases_user   ON store_purchases(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_store_purchases_status ON store_purchases(status);
+
 CREATE TABLE IF NOT EXISTS store_messages (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id  UUID NOT NULL REFERENCES store_conversations(id) ON DELETE CASCADE,

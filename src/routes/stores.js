@@ -1146,9 +1146,10 @@ router.post('/me/conversations/:id/messages', requireStoreAuth, async (req, res,
       [req.params.id, req.storeId, value.content]
     );
 
-    // last_message_at güncelle
+    // last_message_at güncelle + kullanıcı sohbeti gizlediyse yeniden görünür yap
+    // (mağazadan yeni mesaj geldi → kullanıcının listesinde tekrar çıksın)
     await pool.query(
-      'UPDATE store_conversations SET last_message_at = now() WHERE id = $1',
+      'UPDATE store_conversations SET last_message_at = now(), user_hidden_at = NULL WHERE id = $1',
       [req.params.id]
     );
 
@@ -1498,11 +1499,30 @@ router.get('/conversations', requireUserAuth, async (req, res, next) => {
        JOIN stores s ON s.id = c.store_id
        LEFT JOIN store_listings l ON l.id = c.store_listing_id
        WHERE c.user_id = $1
+         AND c.user_hidden_at IS NULL
          AND EXISTS (SELECT 1 FROM store_messages m WHERE m.conversation_id = c.id)
        ORDER BY c.last_message_at DESC NULLS LAST`,
       [req.userId]
     );
     res.json({ conversations: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /stores/conversations/:id — kullanıcı kendi listesinden sohbeti gizler
+// (soft-hide; mağaza tarafı hâlâ görebilir. Yeni mesaj gelirse yeniden görünür.)
+router.delete('/conversations/:id', requireUserAuth, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `UPDATE store_conversations
+       SET user_hidden_at = now()
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [req.params.id, req.userId]
+    );
+    if (r.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -1651,6 +1671,201 @@ router.get('/categories', async (req, res, next) => {
 
     res.json({ tree: roots, flat: rows, total: totalAll });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// SATIN ALMA ONAY AKIŞI (store_purchases)
+// Mağaza chat'ten "kullanıcı satın aldı" işaretler → user'a bildirim →
+// user onaylar/reddeder. Doğrulanmış satışlar mağaza detayında sosyal kanıt.
+// ═══════════════════════════════════════════════════════════
+
+// POST /stores/me/conversations/:convId/mark-purchase
+// Mağaza bir konuşmadan kullanıcının satın aldığını işaretler.
+// Duplicate koruma: aynı conv + listing için mevcut pending varsa yeni oluşturmaz.
+router.post('/me/conversations/:convId/mark-purchase', requireStoreAuth, async (req, res, next) => {
+  try {
+    // Konuşma bu mağazaya mı ait ve user + listing bilgisini çek
+    const conv = await pool.query(
+      `SELECT c.id, c.user_id, c.store_listing_id,
+              u.display_name AS user_name,
+              s.name AS store_name, s.logo_url AS store_logo,
+              l.title AS listing_title
+       FROM store_conversations c
+       JOIN users u ON u.id = c.user_id
+       JOIN stores s ON s.id = c.store_id
+       LEFT JOIN store_listings l ON l.id = c.store_listing_id
+       WHERE c.id = $1 AND c.store_id = $2`,
+      [req.params.convId, req.storeId]
+    );
+    if (conv.rows.length === 0) return res.status(404).json({ error: 'not_found' });
+    const c = conv.rows[0];
+
+    // Zaten pending veya confirmed varsa hata verme, mevcut kaydı dön
+    const existing = await pool.query(
+      `SELECT id, status FROM store_purchases
+       WHERE store_id = $1 AND user_id = $2
+         AND COALESCE(store_listing_id, '00000000-0000-0000-0000-000000000000'::uuid)
+             = COALESCE($3::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
+         AND status IN ('pending','confirmed')
+       ORDER BY initiated_at DESC LIMIT 1`,
+      [req.storeId, c.user_id, c.store_listing_id]
+    );
+    if (existing.rows.length > 0) {
+      return res.json({
+        purchase: existing.rows[0],
+        already: true,
+        message: existing.rows[0].status === 'confirmed'
+          ? 'Bu satış zaten kullanıcı tarafından onaylandı.'
+          : 'Bu ilan için onay bekleyen bir istek var.',
+      });
+    }
+
+    // Yeni kayıt oluştur
+    const ins = await pool.query(
+      `INSERT INTO store_purchases (store_id, user_id, store_listing_id, conversation_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, status, initiated_at`,
+      [req.storeId, c.user_id, c.store_listing_id, req.params.convId]
+    );
+    const purchase = ins.rows[0];
+
+    // Kullanıcıya in-app bildirim
+    const payload = {
+      title: `🛒 ${c.store_name || 'Mağaza'} satın alma onayı istiyor`,
+      body: c.listing_title
+        ? `"${c.listing_title}" için satın aldığını onaylıyor musun?`
+        : 'Bir üründen satın aldığını onaylıyor musun?',
+      purchase_id: purchase.id,
+      store_id: req.storeId,
+      store_name: c.store_name,
+      store_logo: c.store_logo,
+      listing_id: c.store_listing_id,
+      listing_title: c.listing_title,
+      conversation_id: req.params.convId,
+    };
+    try {
+      await pool.query(
+        `INSERT INTO notifications (user_id, type, payload)
+         VALUES ($1, 'store_purchase_request', $2::jsonb)`,
+        [c.user_id, JSON.stringify(payload)]
+      );
+    } catch (e) {
+      console.warn('[purchase] notif insert fail:', e.message);
+    }
+
+    // Push notification
+    (async () => {
+      try {
+        const push = require('../services/push');
+        await push.sendToUser(c.user_id, {
+          title: payload.title,
+          body: payload.body,
+          data: { type: 'store_purchase_request', ...payload },
+        });
+      } catch (e) {
+        console.warn('[purchase] push fail:', e.message);
+      }
+    })();
+
+    res.status(201).json({ purchase, message: 'Kullanıcıya onay bildirimi gönderildi.' });
+  } catch (err) {
+    console.error('[mark-purchase] fail:', err.message);
+    next(err);
+  }
+});
+
+// POST /stores/purchases/:id/confirm — kullanıcı satın almayı onaylar
+router.post('/purchases/:id/confirm', requireUserAuth, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `UPDATE store_purchases
+       SET status = 'confirmed', confirmed_at = now()
+       WHERE id = $1 AND user_id = $2 AND status = 'pending'
+       RETURNING id, store_id, store_listing_id`,
+      [req.params.id, req.userId]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: 'not_found_or_not_pending' });
+    }
+
+    // Bu bildirimi de okundu yap (varsa)
+    try {
+      await pool.query(
+        `UPDATE notifications SET read_at = now()
+         WHERE user_id = $1 AND type = 'store_purchase_request'
+           AND payload->>'purchase_id' = $2 AND read_at IS NULL`,
+        [req.userId, req.params.id]
+      );
+    } catch (_) {}
+
+    res.json({ ok: true, status: 'confirmed' });
+  } catch (err) { next(err); }
+});
+
+// POST /stores/purchases/:id/reject — kullanıcı reddeder
+router.post('/purchases/:id/reject', requireUserAuth, async (req, res, next) => {
+  try {
+    const r = await pool.query(
+      `UPDATE store_purchases
+       SET status = 'rejected', rejected_at = now()
+       WHERE id = $1 AND user_id = $2 AND status = 'pending'
+       RETURNING id`,
+      [req.params.id, req.userId]
+    );
+    if (r.rows.length === 0) {
+      return res.status(404).json({ error: 'not_found_or_not_pending' });
+    }
+    try {
+      await pool.query(
+        `UPDATE notifications SET read_at = now()
+         WHERE user_id = $1 AND type = 'store_purchase_request'
+           AND payload->>'purchase_id' = $2 AND read_at IS NULL`,
+        [req.userId, req.params.id]
+      );
+    } catch (_) {}
+    res.json({ ok: true, status: 'rejected' });
+  } catch (err) { next(err); }
+});
+
+// GET /stores/public/:storeId/purchase-stats
+// Sosyal kanıt: toplam onaylı satış + hangi tanıdıkların satın aldığı.
+// Auth gerekli — tanıdık bilgisi bakan kullanıcının rehberinden çekilir.
+router.get('/public/:storeId/purchase-stats', requireUserAuth, async (req, res, next) => {
+  try {
+    // Toplam onaylı satın alma sayısı (unique kullanıcı)
+    const totalRes = await pool.query(
+      `SELECT COUNT(DISTINCT user_id)::int AS total
+       FROM store_purchases
+       WHERE store_id = $1 AND status = 'confirmed'`,
+      [req.params.storeId]
+    );
+
+    // Bakan kullanıcının tanıdıklarını (1. derece) çek → aralarından bu mağazadan satın alanlar
+    const contacts = await pool.query(
+      `SELECT DISTINCT ON (u.id)
+              u.id, u.display_name, u.avatar_url,
+              uc.contact_name
+       FROM store_purchases sp
+       JOIN users u ON u.id = sp.user_id
+       JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
+       WHERE sp.store_id = $2 AND sp.status = 'confirmed'
+       ORDER BY u.id, sp.confirmed_at DESC
+       LIMIT 20`,
+      [req.userId, req.params.storeId]
+    );
+
+    res.json({
+      total_confirmed: totalRes.rows[0].total || 0,
+      contacts: contacts.rows.map(r => ({
+        id: r.id,
+        name: r.contact_name || r.display_name || 'Tanıdık',
+        avatar_url: r.avatar_url,
+      })),
+    });
+  } catch (err) {
+    console.error('[purchase-stats] fail:', err.message);
     next(err);
   }
 });
