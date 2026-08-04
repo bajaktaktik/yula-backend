@@ -673,76 +673,118 @@ ON CONFLICT (slug) DO NOTHING;
 -- MIGRATION: Eski emlak taxonomy'sini yeni "Konut" altına taşı
 -- Eski: satilik-konut/kiralik-konut (2. seviye) + satilik-daire vs. (3. seviye)
 -- Yeni: konut (2. seviye) + konut-daire vs. (3. seviye)
--- Mevcut ilanları da yeni kategori id'sine taşı ve işlem tipini attribute'a yaz.
+-- NOT: DO $$ bloğu KULLANMA — server.js schema.sql'i semicolon ile split ediyor,
+-- PL/pgSQL blokları parçalanır. Her statement kendi başına idempotent olmalı.
 -- ────────────────────────────────────────────────────────────
-DO $$
-DECLARE
-  konut_id INT;
-  satilik_id INT;
-  kiralik_id INT;
-BEGIN
-  SELECT id INTO konut_id FROM categories WHERE slug = 'konut' LIMIT 1;
-  SELECT id INTO satilik_id FROM categories WHERE slug = 'satilik-konut' LIMIT 1;
-  SELECT id INTO kiralik_id FROM categories WHERE slug = 'kiralik-konut' LIMIT 1;
 
-  -- Eski 3. seviye kategorilerdeki ilanları yeni konut alt tipine taşı + işlem tipini attribute'a yaz
-  IF satilik_id IS NOT NULL THEN
-    UPDATE store_listings sl
-    SET category_id = k.new_id,
-        attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'satilik')
-    FROM (VALUES
-      ('satilik-daire',     'konut-daire'),
-      ('satilik-villa',     'konut-villa'),
-      ('satilik-mustakil',  'konut-mustakil'),
-      ('satilik-rezidans',  'konut-rezidans'),
-      ('satilik-yazlik',    'konut-yazlik'),
-      ('satilik-yali',      'konut-yali')
-    ) AS m(old_slug, new_slug)
-    JOIN categories oc ON oc.slug = m.old_slug
-    JOIN LATERAL (SELECT id AS new_id FROM categories WHERE slug = m.new_slug) k ON true
-    WHERE sl.category_id = oc.id;
+-- 1a) Eski 3. seviye "satilik-*" ilanlarını yeni "konut-*" altına taşı + attribute set et
+UPDATE store_listings sl
+SET category_id = nc.id,
+    attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'satilik')
+FROM categories oc, categories nc
+WHERE sl.category_id = oc.id
+  AND oc.slug IN ('satilik-daire','satilik-villa','satilik-mustakil','satilik-rezidans','satilik-yazlik','satilik-yali')
+  AND nc.slug = REPLACE(oc.slug, 'satilik-', 'konut-')
+;
 
-    -- Kiralık
-    UPDATE store_listings sl
-    SET category_id = k.new_id,
-        attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'kiralik')
-    FROM (VALUES
-      ('kiralik-daire',     'konut-daire'),
-      ('kiralik-villa',     'konut-villa'),
-      ('kiralik-mustakil',  'konut-mustakil'),
-      ('kiralik-rezidans',  'konut-rezidans'),
-      ('kiralik-yazlik',    'konut-yazlik'),
-      ('kiralik-yali',      'konut-yali')
-    ) AS m(old_slug, new_slug)
-    JOIN categories oc ON oc.slug = m.old_slug
-    JOIN LATERAL (SELECT id AS new_id FROM categories WHERE slug = m.new_slug) k ON true
-    WHERE sl.category_id = oc.id;
+-- 1b) Eski 3. seviye "kiralik-*" ilanlarını yeni "konut-*" altına taşı + attribute set et
+UPDATE store_listings sl
+SET category_id = nc.id,
+    attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'kiralik')
+FROM categories oc, categories nc
+WHERE sl.category_id = oc.id
+  AND oc.slug IN ('kiralik-daire','kiralik-villa','kiralik-mustakil','kiralik-rezidans','kiralik-yazlik','kiralik-yali')
+  AND nc.slug = REPLACE(oc.slug, 'kiralik-', 'konut-')
+;
 
-    -- Doğrudan Satılık Konut / Kiralık Konut'a bağlı (alt tip seçmemiş) ilanları da Konut'a taşı
-    UPDATE store_listings
-    SET category_id = konut_id,
-        attributes = COALESCE(attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'satilik')
-    WHERE category_id = satilik_id;
+-- 2a) Doğrudan "satilik-konut" (2. seviye, alt tip seçilmemiş) ilanlarını yeni "konut"a taşı
+UPDATE store_listings sl
+SET category_id = nc.id,
+    attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'satilik')
+FROM categories oc, categories nc
+WHERE sl.category_id = oc.id
+  AND oc.slug = 'satilik-konut'
+  AND nc.slug = 'konut'
+;
 
-    IF kiralik_id IS NOT NULL THEN
-      UPDATE store_listings
-      SET category_id = konut_id,
-          attributes = COALESCE(attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'kiralik')
-      WHERE category_id = kiralik_id;
-    END IF;
+-- 2b) Doğrudan "kiralik-konut" ilanlarını da yeni "konut"a taşı
+UPDATE store_listings sl
+SET category_id = nc.id,
+    attributes = COALESCE(sl.attributes, '{}'::jsonb) || jsonb_build_object('transaction_type', 'kiralik')
+FROM categories oc, categories nc
+WHERE sl.category_id = oc.id
+  AND oc.slug = 'kiralik-konut'
+  AND nc.slug = 'konut'
+;
 
-    -- primary_category_id de mağazalarda güncellensin
-    UPDATE stores SET primary_category_id = konut_id
-    WHERE primary_category_id IN (satilik_id, COALESCE(kiralik_id, -1));
+-- 3) Mağazaların primary_category_id'sini de yeni konut'a taşı
+UPDATE stores s
+SET primary_category_id = nc.id
+FROM categories oc, categories nc
+WHERE s.primary_category_id = oc.id
+  AND oc.slug IN ('satilik-konut','kiralik-konut')
+  AND nc.slug = 'konut'
+;
 
-    -- Eski kategori satırlarını sil (foreign key artık kalmadı)
-    DELETE FROM categories WHERE slug IN (
-      'satilik-daire','satilik-villa','satilik-mustakil','satilik-rezidans','satilik-yazlik','satilik-yali',
-      'kiralik-daire','kiralik-villa','kiralik-mustakil','kiralik-rezidans','kiralik-yazlik','kiralik-yali'
-    );
-    DELETE FROM categories WHERE slug IN ('satilik-konut','kiralik-konut');
-  END IF;
-END $$;
+-- 4) Eski 3. seviye kategori satırlarını sil (artık ilan referansı kalmadı)
+DELETE FROM categories WHERE slug IN (
+  'satilik-daire','satilik-villa','satilik-mustakil','satilik-rezidans','satilik-yazlik','satilik-yali',
+  'kiralik-daire','kiralik-villa','kiralik-mustakil','kiralik-rezidans','kiralik-yazlik','kiralik-yali'
+);
+
+-- 5) Eski 2. seviye "Satılık Konut" ve "Kiralık Konut" kategorilerini sil
+DELETE FROM categories WHERE slug IN ('satilik-konut','kiralik-konut');
+
+-- 6a) Emlak altında birden fazla "Konut" varsa: en küçük id'li olan SURVIVOR.
+--     Diğerlerine (duplicate'lere) bağlı ilanları survivor'a taşı.
+UPDATE store_listings sl
+SET category_id = (SELECT MIN(id) FROM categories
+                   WHERE name = 'Konut'
+                     AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1))
+WHERE sl.category_id IN (
+  SELECT id FROM categories
+  WHERE name = 'Konut'
+    AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1)
+    AND id > (SELECT MIN(id) FROM categories
+              WHERE name = 'Konut'
+                AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1))
+);
+
+-- 6b) Duplicate Konut'lara bağlı child kategorileri (konut-daire vs.) survivor'a re-parent et.
+UPDATE categories c
+SET parent_id = (SELECT MIN(id) FROM categories
+                 WHERE name = 'Konut'
+                   AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1))
+WHERE c.parent_id IN (
+  SELECT id FROM categories
+  WHERE name = 'Konut'
+    AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1)
+    AND id > (SELECT MIN(id) FROM categories
+              WHERE name = 'Konut'
+                AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1))
+);
+
+-- 6c) Mağazaların primary_category_id'sini de survivor'a taşı
+UPDATE stores s
+SET primary_category_id = (SELECT MIN(id) FROM categories
+                           WHERE name = 'Konut'
+                             AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1))
+WHERE s.primary_category_id IN (
+  SELECT id FROM categories
+  WHERE name = 'Konut'
+    AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1)
+    AND id > (SELECT MIN(id) FROM categories
+              WHERE name = 'Konut'
+                AND parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1))
+);
+
+-- 6d) Şimdi duplicate Konut satırlarını sil — artık hiçbir referans yok
+DELETE FROM categories c
+WHERE c.parent_id = (SELECT id FROM categories WHERE slug = 'emlak' AND parent_id IS NULL LIMIT 1)
+  AND c.name = 'Konut'
+  AND c.id > (SELECT MIN(id) FROM categories c2
+              WHERE c2.parent_id = c.parent_id AND c2.name = 'Konut')
+;
 
 -- Apple Guideline 1.2 — User-Generated Content moderation:
 -- Kullanıcılar uygunsuz içerik veya kötü davranan kullanıcıları şikayet edebilir.
