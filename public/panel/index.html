@@ -4007,80 +4007,326 @@ function escapeAttrJs(s) {
   return String(s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
-// Modal — kategoride ilan listesi
+// ═══════════════════════════════════════════════════════════════
+// KATEGORİ İLAN LİSTESİ — full-page drill-down (modal değil)
+// Çok sayıda ilanı yönetebilmek için: arama, durum filtresi,
+// sayfalama, dense list layout.
+// ═══════════════════════════════════════════════════════════════
+const CAT_LISTINGS_PAGE_SIZE = 50;
+let _catViewState = null;   // { catId, catName, mode, status, q, page }
+
 async function openCategoryListingsModal(catId, catName, mode) {
-  const modal = document.getElementById('modal');
-  const content = document.getElementById('modal-content');
-  content.innerHTML = `
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-4">
-        <div>
-          <div class="text-xs uppercase font-bold ${mode === 'user' ? 'text-blue-700' : 'text-purple-700'}">
-            ${mode === 'user' ? '👥 Kullanıcı İlanları' : '🏪 Mağaza İlanları'}
-          </div>
-          <h3 class="text-xl font-bold mt-1">${escapeHtml(catName)}</h3>
-        </div>
-        <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-3xl leading-none">×</button>
-      </div>
-      <div id="cat-listings-body" class="text-center text-slate-500 py-8">Yükleniyor...</div>
+  // Aynı fonksiyon adını koruyoruz (mevcut çağrılar için) ama modal yerine
+  // içerik alanını tamamen değiştiriyoruz. State'i sıfırla:
+  _catViewState = { catId, catName, mode, status: 'active', q: '', page: 0 };
+  await renderCategoryListingsView();
+}
+
+async function renderCategoryListingsView() {
+  const s = _catViewState;
+  if (!s) return;
+  const c = document.getElementById('content');
+  const modeChip = s.mode === 'user'
+    ? '<span class="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded">👥 Kullanıcı</span>'
+    : '<span class="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-1 rounded">🏪 Mağaza</span>';
+
+  const statusOptions = s.mode === 'user'
+    ? [
+        { key: 'active', label: 'Aktif' },
+        { key: 'sold', label: 'Satıldı' },
+        { key: 'removed', label: 'Kaldırılan' },
+        { key: 'all', label: 'Tümü' },
+      ]
+    : [
+        { key: 'active', label: 'Aktif' },
+        { key: 'pending', label: 'Onay bekleyen' },
+        { key: 'rejected', label: 'Reddedilen' },
+        { key: 'all', label: 'Tümü' },
+      ];
+
+  c.innerHTML = `
+    <div class="mb-3 flex items-center gap-3 flex-wrap">
+      <button onclick="renderCategories()"
+              class="text-sm px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 font-semibold text-slate-700">
+        ← Kategorilere Dön
+      </button>
+      ${modeChip}
+      <h3 class="text-lg font-bold">${escapeHtml(s.catName)}</h3>
     </div>
+
+    <!-- Filtre + arama bar -->
+    <div class="bg-white border rounded-lg p-3 mb-3 flex items-center gap-2 flex-wrap sticky top-0 z-10">
+      <div class="flex items-center gap-1">
+        ${statusOptions.map(opt => `
+          <button onclick="catViewSetStatus('${opt.key}')"
+                  class="text-xs px-3 py-1.5 rounded-lg font-semibold ${s.status === opt.key ? 'bg-[#1F4E79] text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}">
+            ${opt.label}
+          </button>
+        `).join('')}
+      </div>
+      <input type="text" id="cat-view-search" value="${escapeHtml(s.q)}"
+             placeholder="Başlıkta ara..."
+             oninput="catViewDebouncedSearch(this.value)"
+             class="ml-auto flex-1 min-w-[200px] max-w-[300px] px-3 py-1.5 text-sm border rounded-lg focus:ring-2 focus:ring-[#1F4E79] focus:border-[#1F4E79] outline-none" />
+      <span id="cat-view-count" class="text-xs text-slate-500 font-semibold whitespace-nowrap">Yükleniyor...</span>
+    </div>
+
+    <div id="cat-view-body" class="text-center text-slate-500 py-8">Yükleniyor...</div>
   `;
-  modal.classList.remove('hidden');
+
+  // İlanları çek
+  await loadCategoryListings();
+}
+
+let _catViewSearchTimer = null;
+function catViewDebouncedSearch(val) {
+  if (_catViewSearchTimer) clearTimeout(_catViewSearchTimer);
+  _catViewSearchTimer = setTimeout(() => {
+    if (!_catViewState) return;
+    _catViewState.q = val.trim();
+    _catViewState.page = 0;
+    loadCategoryListings();
+  }, 350);
+}
+
+function catViewSetStatus(status) {
+  if (!_catViewState) return;
+  _catViewState.status = status;
+  _catViewState.page = 0;
+  renderCategoryListingsView();
+}
+
+async function loadCategoryListings() {
+  const s = _catViewState;
+  if (!s) return;
+  const body = document.getElementById('cat-view-body');
+  const countEl = document.getElementById('cat-view-count');
+  body.innerHTML = '<div class="text-center text-slate-500 py-8">Yükleniyor...</div>';
+
+  const offset = s.page * CAT_LISTINGS_PAGE_SIZE;
+  const params = new URLSearchParams({
+    category: s.catId,
+    status: s.status,
+    limit: String(CAT_LISTINGS_PAGE_SIZE),
+    offset: String(offset),
+  });
+  if (s.q) params.set('q', s.q);
+  const endpoint = s.mode === 'user'
+    ? `/admin/listings?${params.toString()}`
+    : `/admin/store-listings?${params.toString()}`;
 
   try {
-    const endpoint = mode === 'user'
-      ? `/admin/listings?category=${catId}&status=active&limit=200`
-      : `/admin/store-listings?status=active&category=${catId}`;
     const data = await apiJson(endpoint);
     const listings = data.listings || [];
-    const body = document.getElementById('cat-listings-body');
+    if (countEl) countEl.textContent = `Sayfa ${s.page + 1} · ${listings.length} kayıt`;
 
     if (listings.length === 0) {
-      body.innerHTML = '<div class="text-slate-500 py-8">Bu kategoride aktif ilan yok.</div>';
+      body.innerHTML = s.page > 0
+        ? `<div class="text-slate-500 py-8">Bu sayfada kayıt yok. <button onclick="catViewPage(0)" class="text-blue-700 underline">İlk sayfaya dön</button></div>`
+        : '<div class="text-slate-500 py-8">Bu kategoride eşleşen ilan yok.</div>';
       return;
     }
 
     body.innerHTML = `
-      <div class="text-xs text-slate-500 mb-3 text-left"><b>${listings.length}</b> ilan</div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left max-h-[60vh] overflow-y-auto">
-        ${listings.map((l) => catListingCardHtml(l, mode)).join('')}
+      <div class="bg-white border rounded-lg overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-xs text-slate-600 uppercase font-semibold">
+              <tr>
+                <th class="text-left px-3 py-2">İlan</th>
+                <th class="text-right px-3 py-2 w-24">Fiyat</th>
+                <th class="text-left px-3 py-2 w-40">${s.mode === 'user' ? 'Satıcı' : 'Mağaza'}</th>
+                <th class="text-left px-3 py-2 w-24">Şehir</th>
+                <th class="text-left px-3 py-2 w-24">Durum</th>
+                <th class="text-left px-3 py-2 w-20">Tarih</th>
+                <th class="text-center px-3 py-2 w-16">Aksiyon</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y">
+              ${listings.map((l) => catListingRowHtml(l, s.mode)).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sayfalama -->
+      <div class="mt-3 flex items-center justify-between">
+        <div class="text-xs text-slate-500">${listings.length} kayıt gösteriliyor</div>
+        <div class="flex items-center gap-2">
+          <button onclick="catViewPage(${Math.max(0, s.page - 1)})"
+                  ${s.page === 0 ? 'disabled' : ''}
+                  class="px-3 py-1.5 text-sm rounded-lg bg-white border font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed">
+            ← Önceki
+          </button>
+          <span class="text-sm font-semibold text-slate-700 px-2">Sayfa ${s.page + 1}</span>
+          <button onclick="catViewPage(${s.page + 1})"
+                  ${listings.length < CAT_LISTINGS_PAGE_SIZE ? 'disabled' : ''}
+                  class="px-3 py-1.5 text-sm rounded-lg bg-white border font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed">
+            Sonraki →
+          </button>
+        </div>
       </div>
     `;
   } catch (err) {
-    document.getElementById('cat-listings-body').innerHTML =
-      `<div class="text-red-600 py-6">İlanlar yüklenemedi: ${err.message}</div>`;
+    body.innerHTML = `<div class="text-red-600 py-6">İlanlar yüklenemedi: ${err.message}</div>`;
+    if (countEl) countEl.textContent = '';
   }
 }
 
-function catListingCardHtml(l, mode) {
+function catViewPage(p) {
+  if (!_catViewState) return;
+  _catViewState.page = Math.max(0, p);
+  loadCategoryListings();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function catListingRowHtml(l, mode) {
   const priceStr = l.is_negotiable
-    ? '<span class="text-orange-600">Pazarlıklı</span>'
+    ? '<span class="text-orange-600 text-xs">Pazarlıklı</span>'
     : (Number(l.price) === 0
-        ? '<span class="text-green-600">ÜCRETSİZ</span>'
-        : Number(l.price).toLocaleString('tr-TR') + ' ₺');
+        ? '<span class="text-green-600 text-xs font-bold">ÜCRETSİZ</span>'
+        : `<span class="font-bold">${Number(l.price).toLocaleString('tr-TR')} ₺</span>`);
   const owner = mode === 'user'
-    ? `👤 ${escapeHtml(l.seller_name || '—')}`
-    : `🏪 ${escapeHtml(l.store_name || '—')}`;
+    ? `<span title="${escapeHtml(l.seller_name || '')}">👤 ${escapeHtml((l.seller_name || '—').slice(0, 20))}</span>`
+    : `<span title="${escapeHtml(l.store_name || '')}">🏪 ${escapeHtml((l.store_name || '—').slice(0, 20))}</span>`;
+  const status = l.admin_removed_at
+    ? '<span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded font-bold">KALDIRILDI</span>'
+    : l.status === 'sold'
+      ? '<span class="text-xs bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-bold">SATILDI</span>'
+      : l.status === 'pending'
+        ? '<span class="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold">BEKLİYOR</span>'
+        : l.status === 'inactive'
+          ? '<span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded">PASİF</span>'
+          : '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">AKTİF</span>';
+  const dateStr = l.created_at
+    ? new Date(l.created_at).toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', year: '2-digit' })
+    : '—';
+  const detailFn = mode === 'user'
+    ? `openListingDetail('${l.id}')`
+    : `openStoreListingDetail('${l.id}')`;
   return `
-    <div class="border rounded-lg overflow-hidden hover:shadow-md transition">
-      <div class="h-32 bg-slate-100 flex items-center justify-center overflow-hidden">
-        ${l.cover_photo
-          ? `<img src="${escapeHtml(l.cover_photo)}" class="w-full h-full object-cover" />`
-          : '<span class="text-4xl text-slate-300">📦</span>'
-        }
-      </div>
-      <div class="p-3">
-        <div class="font-bold text-sm truncate">${escapeHtml(l.title)}</div>
-        <div class="text-sm font-extrabold text-[#1F4E79] mt-1">${priceStr}</div>
-        <div class="text-xs text-slate-500 mt-1 truncate">${owner}</div>
-        ${l.location_city ? `<div class="text-xs text-slate-400 mt-1">📍 ${escapeHtml(l.location_city)}</div>` : ''}
-      </div>
-    </div>
+    <tr class="hover:bg-slate-50">
+      <td class="px-3 py-2">
+        <div class="flex items-center gap-2 min-w-0">
+          ${l.cover_photo
+            ? `<img src="${escapeHtml(l.cover_photo)}" class="w-10 h-10 object-cover rounded flex-shrink-0" />`
+            : '<div class="w-10 h-10 bg-slate-100 rounded flex items-center justify-center flex-shrink-0 text-slate-400">📦</div>'
+          }
+          <div class="min-w-0 flex-1">
+            <div class="font-semibold text-slate-900 truncate" title="${escapeHtml(l.title)}">${escapeHtml(l.title)}</div>
+            ${l.photo_count > 1 ? `<div class="text-xs text-slate-500">📷 ${l.photo_count}</div>` : ''}
+          </div>
+        </div>
+      </td>
+      <td class="px-3 py-2 text-right">${priceStr}</td>
+      <td class="px-3 py-2 text-xs text-slate-600 truncate">${owner}</td>
+      <td class="px-3 py-2 text-xs text-slate-500">${l.location_city ? '📍 ' + escapeHtml(l.location_city) : '—'}</td>
+      <td class="px-3 py-2">${status}</td>
+      <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">${dateStr}</td>
+      <td class="px-3 py-2 text-center">
+        <button onclick="${detailFn}"
+                class="text-xs px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold">
+          Detay
+        </button>
+      </td>
+    </tr>
   `;
+}
+
+// Mağaza ilan detayı — kategori listesindeki "Detay" için
+async function openStoreListingDetail(id) {
+  openModal(`
+    <div class="p-6">
+      <div class="text-center text-slate-500 py-8">Yükleniyor...</div>
+    </div>
+  `);
+  try {
+    // Store listing detay endpoint'i yok; store-listings'i tek id ile çekmek için
+    // /admin/store-listings?status=all sonra filtrele. Küçük ölçekte kabul edilebilir.
+    const data = await apiJson('/admin/store-listings?status=all');
+    const l = (data.listings || []).find(x => x.id === id);
+    if (!l) {
+      openModal(`
+        <div class="p-6 text-center">
+          <div class="text-4xl mb-2">⚠️</div>
+          <div class="font-bold text-slate-800 mb-2">Kayıt bulunamadı</div>
+          <div class="text-slate-500 text-sm mb-4">İlan silinmiş veya erişilemiyor olabilir.</div>
+          <button onclick="closeModal()" class="px-4 py-2 bg-[#1F4E79] text-white rounded-lg font-semibold">Kapat</button>
+        </div>
+      `);
+      return;
+    }
+    const priceStr = l.is_negotiable ? 'Pazarlıklı'
+      : Number(l.price) === 0 ? 'ÜCRETSİZ'
+      : Number(l.price).toLocaleString('tr-TR') + ' ₺';
+    const attrs = l.attributes || {};
+    const status = l.admin_removed_at
+      ? '<span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded font-bold">KALDIRILDI</span>'
+      : l.status === 'pending'
+        ? '<span class="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold">⏳ ONAY BEKLİYOR</span>'
+        : '<span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">✓ AKTİF</span>';
+    openModal(`
+      <div class="p-6 max-h-[85vh] overflow-y-auto">
+        <div class="flex items-start justify-between mb-4 gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-2">${status}
+              <span class="text-xs text-slate-500">🏪 ${escapeHtml(l.store_name || '—')}</span>
+            </div>
+            <h3 class="text-xl font-bold">${escapeHtml(l.title)}</h3>
+            <div class="text-2xl font-extrabold text-[#1F4E79] mt-1">${priceStr}</div>
+          </div>
+          <button onclick="closeModal()" class="text-slate-400 hover:text-slate-700 text-3xl leading-none">×</button>
+        </div>
+        ${l.cover_photo ? `
+          <img src="${escapeHtml(l.cover_photo)}" class="w-full max-h-80 object-contain bg-slate-100 rounded-lg mb-4" />
+        ` : ''}
+        ${(attrs.rooms || attrs.size_m2 || attrs.floor) ? `
+          <div class="bg-blue-50 rounded-lg p-3 mb-3 text-sm">
+            <div class="font-bold text-blue-800 mb-2">🏠 Emlak Detayları</div>
+            <div class="grid grid-cols-2 gap-2">
+              ${attrs.rooms ? `<div>🚪 ${escapeHtml(attrs.rooms)}</div>` : ''}
+              ${attrs.size_m2 ? `<div>📐 ${attrs.size_m2} m²</div>` : ''}
+              ${attrs.floor ? `<div>🏢 ${escapeHtml(attrs.floor)}. kat</div>` : ''}
+              ${attrs.building_age ? `<div>🕐 ${escapeHtml(attrs.building_age)} yaş</div>` : ''}
+            </div>
+          </div>
+        ` : ''}
+        <div class="text-sm text-slate-600 mb-3">
+          📍 ${escapeHtml(l.location_city || '—')}
+          ${attrs.district ? ' / ' + escapeHtml(attrs.district) : ''}
+          ${attrs.neighborhood ? ' / ' + escapeHtml(attrs.neighborhood) : ''}
+          · 📅 ${new Date(l.created_at).toLocaleDateString('tr-TR')}
+        </div>
+        ${l.description ? `
+          <div class="border-t pt-3 mt-3">
+            <div class="text-xs font-bold text-slate-500 uppercase mb-1">Açıklama</div>
+            <div class="text-sm whitespace-pre-wrap text-slate-700">${escapeHtml(l.description)}</div>
+          </div>
+        ` : ''}
+        ${l.admin_removal_reason ? `
+          <div class="mt-3 bg-red-50 border-l-4 border-red-500 p-3 text-sm">
+            <div class="font-bold text-red-800">Red Sebebi</div>
+            <div class="text-red-700 mt-1">${escapeHtml(l.admin_removal_reason)}</div>
+          </div>
+        ` : ''}
+      </div>
+    `);
+  } catch (err) {
+    openModal(`
+      <div class="p-6 text-center">
+        <div class="text-red-600 mb-3">Hata: ${escapeHtml(err.message)}</div>
+        <button onclick="closeModal()" class="px-4 py-2 bg-[#1F4E79] text-white rounded-lg font-semibold">Kapat</button>
+      </div>
+    `);
+  }
 }
 
 // closeModal + escapeHtml zaten dosyanın üstünde tanımlı, sadece window'a expose et
 window.openCategoryListingsModal = openCategoryListingsModal;
+window.openStoreListingDetail = openStoreListingDetail;
+window.catViewSetStatus = catViewSetStatus;
+window.catViewDebouncedSearch = catViewDebouncedSearch;
+window.catViewPage = catViewPage;
 
 async function ghostApprove(id) {
   if (!confirm('Bu ilanı hayalet olarak onaylıyor musun?')) return;
