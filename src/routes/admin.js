@@ -1278,6 +1278,8 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
   // Expo GraphQL sorgusu — meActor.accounts üzerinden gidip hedef hesabı bul.
   // Bu Expo'nun kendi CLI'ının kullandığı pattern; en güvenilir yol.
   // Alan isimleri kısmen dokümante değil — mevcut olanları çeker, olmayanları null bırakır.
+  // Basit ve emin: sadece isim + id çekiyoruz. Diğer alanların isimleri
+  // Expo schema'sında değişkenlik gösteriyor.
   const query = `
     query MyUsage {
       meActor {
@@ -1285,25 +1287,11 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
         id
         ... on UserActor {
           username
-          accounts {
-            id
-            name
-            subscription {
-              planEnum
-              status
-            }
-          }
+          accounts { id name }
         }
         ... on Robot {
           firstName
-          accounts {
-            id
-            name
-            subscription {
-              planEnum
-              status
-            }
-          }
+          accounts { id name }
         }
       }
     }
@@ -1370,10 +1358,10 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
       configured: true,
       account_name: acct.name,
       account_id: acct.id,
-      plan: acct.subscription?.planEnum || 'FREE',
-      status: acct.subscription?.status,
+      plan: null,
+      status: null,
       usage: null,
-      note: 'Expo GraphQL schema\'sında usage metrics için public alan yok. Sayıları expo.dev dashboard\'dan görüyor olacaksın; kısa yol linki aşağıda.',
+      note: 'Bağlantı kuruldu. MAU/Build/Bandwidth sayıları için Expo dashboard linkine tıkla — public GraphQL\'de bu alanlar yok.',
       other_accounts: actor.accounts.map(a => a.name).filter(n => n !== accountName),
       dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
       fetched_at: new Date().toISOString(),
