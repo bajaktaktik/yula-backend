@@ -361,7 +361,13 @@ router.get('/dashboard', requireAuth, requireAdmin, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM (
            SELECT DISTINCT contact_phone_hash FROM user_contacts
            WHERE contact_phone_hash NOT IN (SELECT phone_hash FROM users WHERE phone_hash IS NOT NULL)
-         ) t)                                                                                                     AS pool_unregistered
+         ) t)                                                                                                     AS pool_unregistered,
+
+        -- ─── AKSİYON GEREKEN SAYAÇLAR (mobil admin panel için) ───
+        (SELECT COUNT(*)::int FROM stores WHERE is_admin_approved = false AND deleted_at IS NULL)                  AS stores_pending,
+        (SELECT COUNT(*)::int FROM store_listings WHERE status = 'pending' AND admin_removed_at IS NULL)           AS store_listings_pending,
+        (SELECT COUNT(*)::int FROM listings WHERE ghost_mode = true AND ghost_approval_status = 'pending' AND admin_removed_at IS NULL) AS ghost_pending,
+        (SELECT COUNT(*)::int FROM stores WHERE pending_email IS NOT NULL AND deleted_at IS NULL)                  AS stores_email_pending
     `);
     res.json(r.rows[0]);
   } catch (err) {
