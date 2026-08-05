@@ -1159,6 +1159,105 @@ router.get('/system/push-log', requireAuth, requireAdmin, async (req, res, next)
   }
 });
 
+// GET /admin/system/expo-quota — Expo push + EAS Update/Build kalan limit özeti
+// Not: Expo push service ücretsiz + sınırsız (fair use). EAS Update/Build plan-bazlı.
+// Bu endpoint DB'den push kullanımını topluyor + plan limitlerini gösteriyor.
+router.get('/system/expo-quota', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    // Kendi push_log tablomuzdan sayaçlar
+    const stats = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours')::int  AS pushes_24h,
+         COUNT(*) FILTER (WHERE created_at > now() - interval '7 days')::int    AS pushes_7d,
+         COUNT(*) FILTER (WHERE created_at > now() - interval '30 days')::int   AS pushes_30d,
+         COUNT(*) FILTER (WHERE created_at >= date_trunc('month', now()))::int  AS pushes_month,
+         COALESCE(SUM(tokens_count) FILTER (WHERE created_at > now() - interval '24 hours'), 0)::int AS tokens_24h,
+         COALESCE(SUM(tokens_count) FILTER (WHERE created_at > now() - interval '30 days'),  0)::int AS tokens_30d,
+         COALESCE(SUM(ok_count)     FILTER (WHERE created_at > now() - interval '30 days'),  0)::int AS ok_30d,
+         COALESCE(SUM(err_count)    FILTER (WHERE created_at > now() - interval '30 days'),  0)::int AS err_30d,
+         COUNT(*) FILTER (WHERE status = 'failed'  AND created_at > now() - interval '24 hours')::int AS failed_24h
+       FROM push_log`
+    );
+
+    // Aktif kullanıcı sayısı — MAU proxy'si (EAS Update MAU limitine yakınlık)
+    // last_active_at üzerinden 30 gün.
+    const tokens = await pool.query(
+      `SELECT COUNT(DISTINCT id)::int AS active_tokens
+       FROM users
+       WHERE status = 'active' AND last_active_at > now() - interval '30 days'`
+    ).catch(() => ({ rows: [{ active_tokens: 0 }] }));
+
+    const plan = (process.env.EAS_PLAN || 'production').toLowerCase();
+
+    // Expo'nun public plan limitleri (Ağustos 2026 itibarı — expo.dev/pricing kontrol et)
+    const PLANS = {
+      free: {
+        eas_update_mau: 1000,
+        eas_build_monthly: 30,
+        push_service: 'Sınırsız (fair use)',
+      },
+      production: {
+        eas_update_mau: 50000,
+        eas_build_monthly: null,   // esnek, kullanım bazlı
+        push_service: 'Sınırsız (fair use)',
+      },
+      enterprise: {
+        eas_update_mau: null,      // özel anlaşma
+        eas_build_monthly: null,
+        push_service: 'Sınırsız',
+      },
+    };
+    const limits = PLANS[plan] || PLANS.production;
+
+    const activeTokens = tokens.rows[0].active_tokens || 0;
+    const mauLimit = limits.eas_update_mau;
+    const mauUsage = mauLimit ? Math.min(100, Math.round((activeTokens / mauLimit) * 100)) : null;
+    const mauStatus = mauUsage == null ? 'unlimited' : mauUsage >= 90 ? 'danger' : mauUsage >= 70 ? 'warn' : 'ok';
+
+    res.json({
+      plan,
+      push: {
+        service: 'Expo Push Service',
+        limit_type: 'unlimited',
+        limit_note: 'Ücretsiz + sınırsız (fair use). ~100 token/istek batch limiti var.',
+        pushes_24h:   stats.rows[0].pushes_24h,
+        pushes_7d:    stats.rows[0].pushes_7d,
+        pushes_30d:   stats.rows[0].pushes_30d,
+        pushes_month: stats.rows[0].pushes_month,
+        tokens_sent_24h: stats.rows[0].tokens_24h,
+        tokens_sent_30d: stats.rows[0].tokens_30d,
+        ok_30d:  stats.rows[0].ok_30d,
+        err_30d: stats.rows[0].err_30d,
+        failed_pushes_24h: stats.rows[0].failed_24h,
+      },
+      eas_update: {
+        plan,
+        mau_limit: mauLimit,
+        active_tokens_30d: activeTokens,
+        usage_percent: mauUsage,
+        status: mauStatus,
+        note: mauLimit
+          ? `${activeTokens.toLocaleString('tr-TR')} / ${mauLimit.toLocaleString('tr-TR')} MAU`
+          : 'Sınırsız',
+      },
+      eas_build: {
+        plan,
+        monthly_limit: limits.eas_build_monthly,
+        note: limits.eas_build_monthly
+          ? `Aylık ${limits.eas_build_monthly} build (kalan sayı expo.dev'de görünür)`
+          : 'Aylık limit yok (kullanım bazlı)',
+      },
+      docs: {
+        pricing:   'https://expo.dev/pricing',
+        dashboard: 'https://expo.dev/accounts',
+      },
+    });
+  } catch (err) {
+    console.error('[expo-quota] fail:', err.message);
+    next(err);
+  }
+});
+
 // GET /admin/system/api-metrics — in-memory summary + recent + slow endpoints
 router.get('/system/api-metrics', requireAuth, requireAdmin, async (req, res, next) => {
   try {
