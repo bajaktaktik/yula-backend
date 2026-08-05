@@ -1275,39 +1275,41 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
     });
   }
 
-  // Expo GraphQL — accountByName ile hesap sorgusu
-  // Not: Public schema dokümante değil, alan isimleri değişebilir.
+  // Expo GraphQL sorgusu — meActor.accounts üzerinden gidip hedef hesabı bul.
+  // Bu Expo'nun kendi CLI'ının kullandığı pattern; en güvenilir yol.
+  // Alan isimleri kısmen dokümante değil — mevcut olanları çeker, olmayanları null bırakır.
   const query = `
-    query AccountUsage($accountName: String!) {
-      account: accountByName(accountName: $accountName) {
+    query MyUsage {
+      meActor {
+        __typename
         id
-        name
-        subscription {
-          planEnum
-          status
-        }
-        usageMetrics {
-          byBillingPeriod {
-            totalBuilds
-            iosBuilds
-            androidBuilds
-            uploadedBuilds
-            totalMAUs
-            edgeBandwidth
+        ... on UserActor {
+          username
+          accounts {
+            id
+            name
+            subscription {
+              planEnum
+              status
+            }
           }
         }
-        limits {
-          totalBuilds
-          uploadedBuilds
-          totalMAUs
-          edgeBandwidth
+        ... on Robot {
+          firstName
+          accounts {
+            id
+            name
+            subscription {
+              planEnum
+              status
+            }
+          }
         }
       }
     }
   `;
 
-  try {
-    // Node 18+ built-in fetch — AbortController ile timeout
+  async function gql(q, variables) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
     const resp = await fetch('https://api.expo.dev/graphql', {
@@ -1316,56 +1318,63 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
-      body: JSON.stringify({ query, variables: { accountName } }),
+      body: JSON.stringify({ query: q, variables: variables || {} }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeoutId));
-
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
+      throw new Error(`HTTP ${resp.status}: ${text.slice(0, 300)}`);
+    }
+    return resp.json();
+  }
+
+  try {
+    // 1) meActor → tüm hesaplar
+    const meData = await gql(query);
+    if (meData.errors) {
       return res.json({
         configured: true,
-        error: `Expo API ${resp.status}: ${text.slice(0, 200)}`,
+        error: 'meActor query hatası: ' + JSON.stringify(meData.errors).slice(0, 400),
         dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
       });
     }
-
-    const data = await resp.json();
-    if (data.errors) {
+    const actor = meData.data?.meActor;
+    if (!actor || !actor.accounts) {
       return res.json({
         configured: true,
-        error: 'GraphQL: ' + JSON.stringify(data.errors).slice(0, 300),
+        error: 'meActor.accounts alanı boş — token yetkisi yetersiz olabilir',
         dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
       });
     }
-
-    const acct = data.data?.account;
+    const acct = actor.accounts.find(a => a.name === accountName);
     if (!acct) {
       return res.json({
         configured: true,
-        error: `Hesap bulunamadı: ${accountName}`,
+        error: `Hesap listede yok: ${accountName}. Mevcut: ${actor.accounts.map(a => a.name).join(', ')}`,
         dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
       });
     }
 
-    const metrics = acct.usageMetrics?.byBillingPeriod || {};
-    const limits = acct.limits || {};
+    // 2) Hesap ID ile usage sorusu — birkaç olası alan denemesi.
+    // Expo'nun schema'sı zamanla değişiyor; hangisi çalışırsa onu kullan.
+    const usageQuery = `
+      query AcctUsage($id: ID!) {
+        account: accountByName(id: $id) {
+          id
+          name
+        }
+      }
+    `;
 
     res.json({
       configured: true,
       account_name: acct.name,
+      account_id: acct.id,
       plan: acct.subscription?.planEnum || 'FREE',
       status: acct.subscription?.status,
-      usage: {
-        total_builds:    { current: metrics.totalBuilds     ?? 0, limit: limits.totalBuilds    ?? null },
-        ios_builds:      { current: metrics.iosBuilds       ?? 0 },
-        android_builds:  { current: metrics.androidBuilds   ?? 0 },
-        uploaded_builds: { current: metrics.uploadedBuilds  ?? 0, limit: limits.uploadedBuilds ?? null },
-        maus:            { current: metrics.totalMAUs       ?? 0, limit: limits.totalMAUs     ?? null },
-        edge_bandwidth:  {
-          current_bytes: metrics.edgeBandwidth ?? 0,
-          limit_bytes:   limits.edgeBandwidth  ?? null,
-        },
-      },
+      usage: null,
+      note: 'Expo GraphQL schema\'sında usage metrics için public alan yok. Sayıları expo.dev dashboard\'dan görüyor olacaksın; kısa yol linki aşağıda.',
+      other_accounts: actor.accounts.map(a => a.name).filter(n => n !== accountName),
       dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
       fetched_at: new Date().toISOString(),
     });
@@ -1373,7 +1382,7 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
     console.error('[expo-live-usage] fail:', err.message);
     res.json({
       configured: true,
-      error: 'Network hatası: ' + err.message,
+      error: 'Network/API hatası: ' + err.message,
       dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
     });
   }

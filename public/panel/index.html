@@ -2835,6 +2835,47 @@ function renderExpoLiveCard(live) {
     `;
   }
 
+  // Bağlantı kuruldu ama usage metrics API'dan gelmedi → hesap+plan bilgisi + dashboard linki
+  if (!live.usage) {
+    return `
+      <div class="mb-4 bg-white border border-slate-200 rounded-xl overflow-hidden">
+        <div class="px-4 py-3 bg-gradient-to-r from-green-50 to-emerald-50 border-b border-slate-200 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-2xl">✅</span>
+            <div>
+              <div class="font-bold text-slate-900">Expo Bağlantısı Kuruldu</div>
+              <div class="text-xs text-slate-500">
+                Hesap: <b>${escapeHtml(live.account_name || '—')}</b> ·
+                Plan: <b class="text-emerald-700 uppercase">${escapeHtml(live.plan || '—')}</b>
+                ${live.status ? ` · <span class="text-slate-500">${escapeHtml(live.status)}</span>` : ''}
+              </div>
+            </div>
+          </div>
+          <a href="${live.dashboard_url}" target="_blank" rel="noopener"
+             class="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700">
+            Dashboard'da Görüntüle ↗
+          </a>
+        </div>
+        ${live.note ? `<div class="px-4 py-3 text-xs text-slate-600 bg-slate-50 border-b border-slate-100">💡 ${escapeHtml(live.note)}</div>` : ''}
+        <div class="p-4 grid grid-cols-2 gap-3 text-sm">
+          <a href="${live.dashboard_url}" target="_blank" rel="noopener" class="p-3 border rounded-lg hover:bg-slate-50">
+            <div class="text-xs text-slate-500 uppercase font-semibold mb-1">📱 MAUs</div>
+            <div class="text-slate-500 text-xs">Canlı sayıyı görmek için tıkla</div>
+          </a>
+          <a href="https://expo.dev/accounts/${escapeHtml(live.account_name || 'bajak')}/settings/billing" target="_blank" rel="noopener" class="p-3 border rounded-lg hover:bg-slate-50">
+            <div class="text-xs text-slate-500 uppercase font-semibold mb-1">🔨 Builds</div>
+            <div class="text-slate-500 text-xs">expo.dev/settings/billing</div>
+          </a>
+        </div>
+        ${live.other_accounts && live.other_accounts.length > 0 ? `
+          <div class="px-4 py-2 border-t border-slate-100 bg-slate-50 text-xs text-slate-500">
+            Bu token'ın erişimi olan diğer hesaplar: <b>${live.other_accounts.map(escapeHtml).join(', ')}</b>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
   const u = live.usage || {};
 
   function bar(current, limit, color) {
