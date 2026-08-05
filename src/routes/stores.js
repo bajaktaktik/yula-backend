@@ -1801,9 +1801,11 @@ router.get('/me/purchases', requireStoreAuth, async (req, res, next) => {
          sp.id, sp.status, sp.store_listing_id, sp.conversation_id,
          sp.initiated_at, sp.confirmed_at, sp.rejected_at,
          u.id AS user_id,
-         u.display_name AS user_name,
-         u.avatar_url AS user_avatar,
-         u.location_city AS user_city,
+         -- Hayalet moddaki kullanıcının kimliği gizli
+         CASE WHEN u.ghost_mode = true THEN NULL ELSE u.display_name END AS user_name,
+         CASE WHEN u.ghost_mode = true THEN NULL ELSE u.avatar_url END AS user_avatar,
+         CASE WHEN u.ghost_mode = true THEN NULL ELSE u.location_city END AS user_city,
+         COALESCE(u.ghost_mode, false) AS is_ghost,
          l.title AS listing_title, l.price AS listing_price,
          (SELECT COALESCE(p.thumb_url, p.url) FROM store_listing_photos p
           WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS listing_cover
@@ -1908,6 +1910,8 @@ router.get('/public/:storeId/purchase-stats', requireUserAuth, async (req, res, 
     );
 
     // Bakan kullanıcının tanıdıklarını (1. derece) çek → aralarından bu mağazadan satın alanlar
+    // - Kullanıcı kendisini görmesin
+    // - Hayalet moddaki kullanıcılar liste dışı (adları gizli kalmalı)
     const contacts = await pool.query(
       `SELECT DISTINCT ON (u.id)
               u.id, u.display_name, u.avatar_url,
@@ -1915,7 +1919,10 @@ router.get('/public/:storeId/purchase-stats', requireUserAuth, async (req, res, 
        FROM store_purchases sp
        JOIN users u ON u.id = sp.user_id
        JOIN user_contacts uc ON uc.user_id = $1 AND uc.contact_phone_hash = u.phone_hash
-       WHERE sp.store_id = $2 AND sp.status = 'confirmed'
+       WHERE sp.store_id = $2
+         AND sp.status = 'confirmed'
+         AND sp.user_id <> $1
+         AND (u.ghost_mode = false OR u.ghost_mode IS NULL)
        ORDER BY u.id, sp.confirmed_at DESC
        LIMIT 20`,
       [req.userId, req.params.storeId]
