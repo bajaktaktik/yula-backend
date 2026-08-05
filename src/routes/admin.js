@@ -1275,11 +1275,11 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
     });
   }
 
-  // Expo GraphQL — usage metrics + subscription plan
-  // Schema değişebileceği için 2 farklı sorgu deniyoruz (fallback)
+  // Expo GraphQL — accountByName ile hesap sorgusu
+  // Not: Public schema dokümante değil, alan isimleri değişebilir.
   const query = `
     query AccountUsage($accountName: String!) {
-      account(accountName: $accountName) {
+      account: accountByName(accountName: $accountName) {
         id
         name
         subscription {
