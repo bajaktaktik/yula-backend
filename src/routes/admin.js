@@ -1297,6 +1297,32 @@ router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res
     }
   `;
 
+  // Introspection: hangi alanlar mevcut? Debug modu (?debug=1 ile aç)
+  if (req.query.debug === '1') {
+    try {
+      const introspect = await (async () => {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 8000);
+        const r = await fetch('https://api.expo.dev/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            query: `{
+              account: __type(name: "Account")       { name fields { name type { name kind ofType { name } } } }
+              rootQuery: __type(name: "RootQuery")   { name fields { name type { name kind ofType { name } } } }
+              sub:       __type(name: "SubscriptionDetails") { name fields { name type { name kind ofType { name } } } }
+            }`,
+          }),
+          signal: controller.signal,
+        }).finally(() => clearTimeout(t));
+        return r.json();
+      })();
+      return res.json({ configured: true, introspection: introspect, dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage` });
+    } catch (e) {
+      return res.json({ configured: true, introspection_error: e.message });
+    }
+  }
+
   async function gql(q, variables) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
