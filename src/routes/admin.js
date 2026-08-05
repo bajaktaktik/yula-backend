@@ -1258,6 +1258,127 @@ router.get('/system/expo-quota', requireAuth, requireAdmin, async (req, res, nex
   }
 });
 
+// GET /admin/system/expo-live-usage — Expo API'dan canlı kullanım (MAU, Build, Bandwidth)
+// ENV: EXPO_TOKEN (expo.dev/settings/access-tokens'dan üret) + EXPO_ACCOUNT_NAME (varsayılan: bajak)
+//
+// Expo public GraphQL API dokümante değil — endpoint schema değişebilir.
+// Bağlanamazsa dashboard linki döner, panel oradan devam eder.
+router.get('/system/expo-live-usage', requireAuth, requireAdmin, async (req, res, next) => {
+  const token = process.env.EXPO_TOKEN;
+  const accountName = process.env.EXPO_ACCOUNT_NAME || 'bajak';
+
+  if (!token) {
+    return res.json({
+      configured: false,
+      message: 'EXPO_TOKEN env değişkeni ayarlanmamış. expo.dev/settings/access-tokens sayfasından token üret ve Railway env\'ine ekle.',
+      dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
+    });
+  }
+
+  // Expo GraphQL — usage metrics + subscription plan
+  // Schema değişebileceği için 2 farklı sorgu deniyoruz (fallback)
+  const query = `
+    query AccountUsage($accountName: String!) {
+      account(accountName: $accountName) {
+        id
+        name
+        subscription {
+          planEnum
+          status
+        }
+        usageMetrics {
+          byBillingPeriod {
+            totalBuilds
+            iosBuilds
+            androidBuilds
+            uploadedBuilds
+            totalMAUs
+            edgeBandwidth
+          }
+        }
+        limits {
+          totalBuilds
+          uploadedBuilds
+          totalMAUs
+          edgeBandwidth
+        }
+      }
+    }
+  `;
+
+  try {
+    // Node 18+ built-in fetch — AbortController ile timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch('https://api.expo.dev/graphql', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ query, variables: { accountName } }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      return res.json({
+        configured: true,
+        error: `Expo API ${resp.status}: ${text.slice(0, 200)}`,
+        dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
+      });
+    }
+
+    const data = await resp.json();
+    if (data.errors) {
+      return res.json({
+        configured: true,
+        error: 'GraphQL: ' + JSON.stringify(data.errors).slice(0, 300),
+        dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
+      });
+    }
+
+    const acct = data.data?.account;
+    if (!acct) {
+      return res.json({
+        configured: true,
+        error: `Hesap bulunamadı: ${accountName}`,
+        dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
+      });
+    }
+
+    const metrics = acct.usageMetrics?.byBillingPeriod || {};
+    const limits = acct.limits || {};
+
+    res.json({
+      configured: true,
+      account_name: acct.name,
+      plan: acct.subscription?.planEnum || 'FREE',
+      status: acct.subscription?.status,
+      usage: {
+        total_builds:    { current: metrics.totalBuilds     ?? 0, limit: limits.totalBuilds    ?? null },
+        ios_builds:      { current: metrics.iosBuilds       ?? 0 },
+        android_builds:  { current: metrics.androidBuilds   ?? 0 },
+        uploaded_builds: { current: metrics.uploadedBuilds  ?? 0, limit: limits.uploadedBuilds ?? null },
+        maus:            { current: metrics.totalMAUs       ?? 0, limit: limits.totalMAUs     ?? null },
+        edge_bandwidth:  {
+          current_bytes: metrics.edgeBandwidth ?? 0,
+          limit_bytes:   limits.edgeBandwidth  ?? null,
+        },
+      },
+      dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
+      fetched_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[expo-live-usage] fail:', err.message);
+    res.json({
+      configured: true,
+      error: 'Network hatası: ' + err.message,
+      dashboard_url: `https://expo.dev/accounts/${accountName}/settings/usage`,
+    });
+  }
+});
+
 // GET /admin/system/api-metrics — in-memory summary + recent + slow endpoints
 router.get('/system/api-metrics', requireAuth, requireAdmin, async (req, res, next) => {
   try {

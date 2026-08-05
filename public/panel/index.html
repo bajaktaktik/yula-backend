@@ -2733,9 +2733,10 @@ async function loadSystemPush() {
   const c = document.getElementById('system-content');
   c.innerHTML = '<div class="p-16 flex justify-center"><div class="spinner"></div></div>';
   try {
-    const [data, quota] = await Promise.all([
+    const [data, quota, live] = await Promise.all([
       apiJson('/admin/system/push-log?limit=100'),
       apiJson('/admin/system/expo-quota').catch(() => null),
+      apiJson('/admin/system/expo-live-usage').catch(() => null),
     ]);
     const logs = data.logs || [];
     const s = data.stats || {};
@@ -2745,8 +2746,10 @@ async function loadSystemPush() {
 
     // Expo quota kartları — kalan limit özeti
     const quotaHtml = quota ? renderExpoQuotaCard(quota) : '';
+    const liveHtml  = live  ? renderExpoLiveCard(live)   : '';
 
     c.innerHTML = `
+      ${liveHtml}
       ${quotaHtml}
       <div class="grid grid-cols-4 gap-4 mb-4">
         <div class="card"><div class="text-xs text-slate-500">Son 24 saat gönderim</div><div class="text-2xl font-bold">${s.total_24h ?? 0}</div></div>
@@ -2792,6 +2795,136 @@ async function loadSystemPush() {
   } catch (err) {
     c.innerHTML = '<div class="text-red-600 p-4">Hata: ' + err.message + '</div>';
   }
+}
+
+// Canlı Expo usage — expo.dev/settings/usage'daki gerçek sayılar (GraphQL üzerinden)
+function renderExpoLiveCard(live) {
+  // Token yok / hata durumunda basit uyarı kart
+  if (!live.configured) {
+    return `
+      <div class="mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-lg">
+        <div class="flex items-start gap-3">
+          <span class="text-2xl">⚙️</span>
+          <div class="flex-1">
+            <div class="font-bold text-amber-900 mb-1">Canlı Expo Kullanım — Kurulum Gerekli</div>
+            <div class="text-sm text-amber-800 mb-2">${escapeHtml(live.message)}</div>
+            <div class="text-xs text-amber-700">
+              Adım: <a href="https://expo.dev/settings/access-tokens" target="_blank" rel="noopener" class="underline font-semibold">expo.dev/settings/access-tokens</a>
+              → Yeni token üret → Railway env'ine <code class="bg-white px-1 rounded">EXPO_TOKEN=xxx</code> ekle → deploy.
+            </div>
+            <a href="${live.dashboard_url}" target="_blank" rel="noopener"
+               class="inline-block mt-3 text-xs px-3 py-1.5 rounded-lg bg-amber-600 text-white font-semibold hover:bg-amber-700">
+              expo.dev Dashboard ↗
+            </a>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  // API hatası durumu
+  if (live.error) {
+    return `
+      <div class="mb-4 p-4 bg-red-50 border-l-4 border-red-500 rounded-lg">
+        <div class="font-bold text-red-900 mb-1">⚠️ Expo API bağlantı hatası</div>
+        <div class="text-xs text-red-800 mb-2 font-mono break-all">${escapeHtml(live.error)}</div>
+        <a href="${live.dashboard_url}" target="_blank" rel="noopener"
+           class="inline-block text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700">
+          expo.dev Dashboard ↗
+        </a>
+      </div>
+    `;
+  }
+
+  const u = live.usage || {};
+
+  function bar(current, limit, color) {
+    if (!limit) return '';
+    const pct = Math.min(100, Math.round((current / limit) * 100));
+    const cc = pct >= 90 ? '#dc2626' : pct >= 70 ? '#f59e0b' : color;
+    return `
+      <div class="mt-2 w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+        <div style="width:${pct}%;background:${cc};height:100%"></div>
+      </div>
+      <div class="text-[10px] text-slate-500 mt-0.5">%${pct}</div>
+    `;
+  }
+  function bytesToStr(bytes) {
+    if (bytes == null) return '—';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KiB';
+    if (bytes < 1024*1024*1024) return (bytes/1024/1024).toFixed(2) + ' MiB';
+    return (bytes/1024/1024/1024).toFixed(2) + ' GiB';
+  }
+
+  const bwCur = u.edge_bandwidth?.current_bytes ?? 0;
+  const bwLim = u.edge_bandwidth?.limit_bytes;
+
+  return `
+    <div class="mb-4 bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <div class="px-4 py-3 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-slate-200 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">🎯</span>
+          <div>
+            <div class="font-bold text-slate-900">Expo Canlı Kullanım</div>
+            <div class="text-xs text-slate-500">
+              Hesap: <b>${escapeHtml(live.account_name || '—')}</b> · Plan: <b class="text-indigo-700 uppercase">${escapeHtml(live.plan || '—')}</b>
+              ${live.fetched_at ? ' · ' + new Date(live.fetched_at).toLocaleTimeString('tr-TR') : ''}
+            </div>
+          </div>
+        </div>
+        <a href="${live.dashboard_url}" target="_blank" rel="noopener"
+           class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700">
+          Dashboard ↗
+        </a>
+      </div>
+
+      <div class="grid grid-cols-3 gap-0 divide-x divide-slate-100">
+        <!-- Total Builds -->
+        <div class="p-4">
+          <div class="text-xs text-slate-500 font-semibold uppercase mb-1">🔨 Total Builds</div>
+          <div class="text-2xl font-extrabold text-slate-900">
+            ${(u.total_builds?.current ?? 0).toLocaleString('tr-TR')}
+            ${u.total_builds?.limit ? `<span class="text-base text-slate-400 font-semibold"> / ${u.total_builds.limit.toLocaleString('tr-TR')}</span>` : ''}
+          </div>
+          ${bar(u.total_builds?.current ?? 0, u.total_builds?.limit, '#8b5cf6')}
+          <div class="text-[11px] text-slate-500 mt-2">
+            🍎 iOS: <b>${(u.ios_builds?.current ?? 0).toLocaleString('tr-TR')}</b>
+            &nbsp;·&nbsp;
+            🤖 Android: <b>${(u.android_builds?.current ?? 0).toLocaleString('tr-TR')}</b>
+          </div>
+        </div>
+
+        <!-- Uploaded Builds -->
+        <div class="p-4">
+          <div class="text-xs text-slate-500 font-semibold uppercase mb-1">📤 Uploaded Builds</div>
+          <div class="text-2xl font-extrabold text-slate-900">
+            ${(u.uploaded_builds?.current ?? 0).toLocaleString('tr-TR')}
+            ${u.uploaded_builds?.limit ? `<span class="text-base text-slate-400 font-semibold"> / ${u.uploaded_builds.limit.toLocaleString('tr-TR')}</span>` : ''}
+          </div>
+          ${bar(u.uploaded_builds?.current ?? 0, u.uploaded_builds?.limit, '#0ea5e9')}
+        </div>
+
+        <!-- MAUs -->
+        <div class="p-4">
+          <div class="text-xs text-slate-500 font-semibold uppercase mb-1">📱 Monthly Active Users</div>
+          <div class="text-2xl font-extrabold text-slate-900">
+            ${(u.maus?.current ?? 0).toLocaleString('tr-TR')}
+            ${u.maus?.limit ? `<span class="text-base text-slate-400 font-semibold"> / ${u.maus.limit.toLocaleString('tr-TR')}</span>` : ''}
+          </div>
+          ${bar(u.maus?.current ?? 0, u.maus?.limit, '#16a34a')}
+        </div>
+      </div>
+
+      <!-- Edge Bandwidth alt bar -->
+      <div class="border-t border-slate-100 bg-slate-50 px-4 py-3">
+        <div class="flex items-center justify-between text-xs mb-1">
+          <span class="font-semibold text-slate-700">🌐 Global Edge Bandwidth</span>
+          <span class="text-slate-600"><b class="text-slate-900">${bytesToStr(bwCur)}</b>${bwLim ? ' / ' + bytesToStr(bwLim) : ''}</span>
+        </div>
+        ${bar(bwCur, bwLim, '#0891b2')}
+      </div>
+    </div>
+  `;
 }
 
 // Expo kalan limit özet kartı — Push tab'ın üstünde görünür
