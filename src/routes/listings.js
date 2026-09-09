@@ -697,6 +697,16 @@ router.post('/:id/forward', requireAuth, async (req, res, next) => {
           console.warn('[forward-notify] fail:', e.message);
         }
       })();
+
+      // Forwarder'ın çevresindeki (1. derece) kişilere de bildir — artık ilan onlara görünür
+      (async () => {
+        try {
+          const { notifyOnListingForwarded } = require('../services/notification-triggers');
+          await notifyOnListingForwarded(listingId, req.userId);
+        } catch (e) {
+          console.warn('[forward-network-notify] fail:', e.message);
+        }
+      })();
     }
 
     res.json({ ok: true, already: ins.rowCount === 0 });
@@ -1029,6 +1039,17 @@ router.post('/', requireAuth, async (req, res, next) => {
         );
       } catch (e) {
         console.error('[listings] admin notify fail:', e.message);
+      }
+    })();
+
+    // Ağdaki kişilere bildir — ilanı görebilenlere (1. + 2. derece)
+    // Hayalet ilan / pending onaylı olsa da: hayaletse notif payload'da anonim gönderilir
+    (async () => {
+      try {
+        const { notifyOnNewListing } = require('../services/notification-triggers');
+        await notifyOnNewListing(listing.id, req.userId);
+      } catch (e) {
+        console.error('[listings] network notify fail:', e.message);
       }
     })();
 

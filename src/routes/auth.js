@@ -83,6 +83,14 @@ router.post('/register-pin', async (req, res, next) => {
         [phoneHash, value.displayName || null, pinHash]
       );
       user = ins.rows[0];
+
+      // Yeni kayıt → ağdaki tanıdıklarına + 2. derece tanıdıklarına bildir
+      (async () => {
+        try {
+          const { notifyOnNewMember } = require('../services/notification-triggers');
+          await notifyOnNewMember(user.id);
+        } catch (e) { console.error('[notify-new-member] fail:', e.message); }
+      })();
     }
 
     // Growth attribution: kullanıcı bir share link'inden geldiyse referred_by_share_id set et
@@ -243,14 +251,26 @@ router.post('/verify-otp', async (req, res, next) => {
     const phoneHash = rehashClientHash(value.phoneSha256);
 
     // Kullanıcıyı bul veya oluştur
+    // xmax=0 → yeni kayıt (INSERT); xmax<>0 → mevcut (UPDATE path)
     const upsert = await pool.query(
       `INSERT INTO users (phone_hash, display_name)
        VALUES ($1, $2)
        ON CONFLICT (phone_hash) DO UPDATE SET last_active_at = now()
-       RETURNING id, display_name, avatar_url, bio, created_at`,
+       RETURNING id, display_name, avatar_url, bio, created_at, (xmax = 0) AS is_new`,
       [phoneHash, value.displayName || null]
     );
     const user = upsert.rows[0];
+    const isNew = user.is_new;
+    delete user.is_new;
+
+    if (isNew) {
+      (async () => {
+        try {
+          const { notifyOnNewMember } = require('../services/notification-triggers');
+          await notifyOnNewMember(user.id);
+        } catch (e) { console.error('[notify-new-member] fail:', e.message); }
+      })();
+    }
 
     // App Store / Play Store reviewer ise demo content seed et (idempotent, fire-and-forget).
     // Reviewer login olduğunda ana sayfa dolu görür → "boş uygulama" reject riski biter.
