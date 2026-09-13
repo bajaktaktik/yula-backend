@@ -432,6 +432,13 @@ CREATE TABLE IF NOT EXISTS listing_visibility (
 );
 CREATE INDEX IF NOT EXISTS idx_listing_visibility_listing ON listing_visibility(listing_id);
 
+-- Tüm rehber için default görünürlük (yani "Tüm Rehber" seçimi).
+-- 'show' → herkes normal görür (default)
+-- 'ghost' → herkes hayalet görür (ilan sahibi kimliği gizli)
+-- Grup bazlı kurallar bunun ÜSTÜNE biner ve göster/hayalet precedence: show > ghost.
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS default_visibility_mode TEXT
+  CHECK (default_visibility_mode IN ('show','ghost'));
+
 -- Cihaz tokenlari (push bildirimi icin)
 CREATE TABLE IF NOT EXISTS device_tokens (
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

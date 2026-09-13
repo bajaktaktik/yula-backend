@@ -23,8 +23,11 @@ const createSchema = Joi.object({
   photoThumbs: Joi.array().items(Joi.string()).max(8).default([]),
   restrictedToGender: Joi.string().valid('female', 'male').allow(null).optional(),
   isNegotiable: Joi.boolean().default(false),
-  ghostMode: Joi.boolean().default(false), // ilan-bazlı hayalet — kullanıcı normal olsa da bu ilan hayalet
-  // Grup bazlı görünürlük — boşsa varsayılan (tüm 1./2. derece). Doluysa whitelist.
+  ghostMode: Joi.boolean().default(false), // ESKİ — backward compat; yeni akışta defaultVisibilityMode kullan
+  // Tüm rehber default görünürlük — 'show' herkes normal, 'ghost' herkes hayalet
+  defaultVisibilityMode: Joi.string().valid('show', 'ghost').default('show'),
+  // Grup bazlı override — grup üyeleri default_visibility_mode yerine kendi mode'unu görür
+  // Precedence: show baskın. Kişi hem show hem ghost gruplarındaysa show görür.
   visibilityRules: Joi.array().items(Joi.object({
     group_id: Joi.string().uuid().required(),
     mode:     Joi.string().valid('show', 'ghost').required(),
@@ -210,17 +213,6 @@ router.get('/', requireAuth, async (req, res, next) => {
       genderFilter(myGender),
       // Kendi ilanlarını akışta görmesin (sadece İlanlarım sekmesinde)
       `l.user_id <> '${req.userId}'`,
-      // Grup bazlı görünürlük — ilanın kuralı varsa: viewer kuraldaki gruplardan birinde olmalı
-      // Kural yoksa: normal (tüm 1./2. derece)
-      `(
-        NOT EXISTS (SELECT 1 FROM listing_visibility lv WHERE lv.listing_id = l.id)
-        OR EXISTS (
-          SELECT 1 FROM listing_visibility lv
-          JOIN contact_group_members m ON m.group_id = lv.group_id
-          JOIN users vu ON vu.id = '${req.userId}'
-          WHERE lv.listing_id = l.id AND m.contact_phone_hash = vu.phone_hash
-        )
-      )`,
     ];
     const params = [ids];
     if (forwardedListingIds.length > 0) {
@@ -306,12 +298,22 @@ router.get('/', requireAuth, async (req, res, next) => {
              u.avatar_url AS seller_avatar,
              u.ghost_mode AS seller_ghost_mode,
              l.ghost_mode AS listing_ghost_mode,
-             -- Grup görünürlük kuralı: viewer bir gruba dahilse mode gelir (show/ghost)
-             (SELECT lv.mode FROM listing_visibility lv
-                JOIN contact_group_members m ON m.group_id = lv.group_id
-                JOIN users vu ON vu.id = $${userParamIdx}
-                WHERE lv.listing_id = l.id AND m.contact_phone_hash = vu.phone_hash
-                LIMIT 1) AS visibility_mode,
+             -- Grup görünürlük kuralı: precedence show > ghost.
+             -- viewer birden fazla gruptaysa ve biri show diyorsa → show.
+             -- Grup kuralı yoksa: l.default_visibility_mode ('show' veya 'ghost').
+             COALESCE(
+               (SELECT 'show'::text FROM listing_visibility lv
+                  JOIN contact_group_members m ON m.group_id = lv.group_id
+                  JOIN users vu ON vu.id = $${userParamIdx}
+                  WHERE lv.listing_id = l.id AND m.contact_phone_hash = vu.phone_hash AND lv.mode = 'show'
+                  LIMIT 1),
+               (SELECT 'ghost'::text FROM listing_visibility lv
+                  JOIN contact_group_members m ON m.group_id = lv.group_id
+                  JOIN users vu ON vu.id = $${userParamIdx}
+                  WHERE lv.listing_id = l.id AND m.contact_phone_hash = vu.phone_hash AND lv.mode = 'ghost'
+                  LIMIT 1),
+               l.default_visibility_mode
+             ) AS visibility_mode,
              -- Liste kartı için tek foto: cover (ilk) thumbnail
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              -- Auto-loop için tüm foto thumbnails (max 8, base64 değil thumbnail URL)
@@ -993,9 +995,9 @@ router.post('/', requireAuth, async (req, res, next) => {
     let ins;
     try {
       ins = await client.query(
-        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key, ghost_mode, ghost_approval_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey, !!value.ghostMode, approvalStatus]
+        `INSERT INTO listings (user_id, title, description, category_id, price, currency, location_city, location_district, restricted_to_gender, is_negotiable, idempotency_key, ghost_mode, ghost_approval_status, default_visibility_mode)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+        [req.userId, value.title, value.description, value.categoryId, value.price, value.currency, value.locationCity || null, value.locationDistrict || null, restrictedTo, !!value.isNegotiable, idempotencyKey, !!value.ghostMode, approvalStatus, value.defaultVisibilityMode || 'show']
       );
     } catch (dbErr) {
       // 23505 = unique_violation — race condition: aynı key paralel geldi
