@@ -395,6 +395,43 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
   ON notifications(user_id, read_at, created_at DESC);
 
+-- ─────────────────────────────────────────────────────────────
+-- KULLANICI GRUPLARI — kullanıcı rehberindeki kişileri kendi gruplarına atar.
+-- Ilan verirken görünürlük gruplar bazında ayarlanabilir.
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS contact_groups (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  icon        TEXT,                                 -- emoji: '🤝' '❤️' '👻' vs.
+  is_ghost    BOOLEAN NOT NULL DEFAULT FALSE,       -- true = bu gruba dahil olanlara ilanlar HAYALET görünür (varsayılan)
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(user_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_contact_groups_user ON contact_groups(user_id);
+
+-- Grup üyeleri — rehberdeki telefon hash referansı
+CREATE TABLE IF NOT EXISTS contact_group_members (
+  group_id            UUID NOT NULL REFERENCES contact_groups(id) ON DELETE CASCADE,
+  contact_phone_hash  TEXT NOT NULL,
+  contact_name        TEXT,                          -- rehberdeki isim kopyası (kolaylık için)
+  added_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(group_id, contact_phone_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_contact_group_members_hash ON contact_group_members(contact_phone_hash);
+
+-- İlan görünürlük kuralları — kural varsa whitelist mantığı (sadece kuraldaki gruplar görür)
+-- mode = 'show'  → normal göster
+-- mode = 'ghost' → hayalet olarak göster (kimlik gizli)
+-- Kayıt yoksa: default — tüm 1./2. derece bağlantılar görür.
+CREATE TABLE IF NOT EXISTS listing_visibility (
+  listing_id  UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  group_id    UUID NOT NULL REFERENCES contact_groups(id) ON DELETE CASCADE,
+  mode        TEXT NOT NULL CHECK (mode IN ('show','ghost')),
+  PRIMARY KEY(listing_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_visibility_listing ON listing_visibility(listing_id);
+
 -- Cihaz tokenlari (push bildirimi icin)
 CREATE TABLE IF NOT EXISTS device_tokens (
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

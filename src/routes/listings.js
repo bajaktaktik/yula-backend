@@ -24,6 +24,11 @@ const createSchema = Joi.object({
   restrictedToGender: Joi.string().valid('female', 'male').allow(null).optional(),
   isNegotiable: Joi.boolean().default(false),
   ghostMode: Joi.boolean().default(false), // ilan-bazlı hayalet — kullanıcı normal olsa da bu ilan hayalet
+  // Grup bazlı görünürlük — boşsa varsayılan (tüm 1./2. derece). Doluysa whitelist.
+  visibilityRules: Joi.array().items(Joi.object({
+    group_id: Joi.string().uuid().required(),
+    mode:     Joi.string().valid('show', 'ghost').required(),
+  })).max(20).default([]),
 });
 
 // Kullanıcının cinsiyetini DB'den çek (route handler'lar için yardımcı)
@@ -205,6 +210,17 @@ router.get('/', requireAuth, async (req, res, next) => {
       genderFilter(myGender),
       // Kendi ilanlarını akışta görmesin (sadece İlanlarım sekmesinde)
       `l.user_id <> '${req.userId}'`,
+      // Grup bazlı görünürlük — ilanın kuralı varsa: viewer kuraldaki gruplardan birinde olmalı
+      // Kural yoksa: normal (tüm 1./2. derece)
+      `(
+        NOT EXISTS (SELECT 1 FROM listing_visibility lv WHERE lv.listing_id = l.id)
+        OR EXISTS (
+          SELECT 1 FROM listing_visibility lv
+          JOIN contact_group_members m ON m.group_id = lv.group_id
+          JOIN users vu ON vu.id = '${req.userId}'
+          WHERE lv.listing_id = l.id AND m.contact_phone_hash = vu.phone_hash
+        )
+      )`,
     ];
     const params = [ids];
     if (forwardedListingIds.length > 0) {
@@ -290,6 +306,12 @@ router.get('/', requireAuth, async (req, res, next) => {
              u.avatar_url AS seller_avatar,
              u.ghost_mode AS seller_ghost_mode,
              l.ghost_mode AS listing_ghost_mode,
+             -- Grup görünürlük kuralı: viewer bir gruba dahilse mode gelir (show/ghost)
+             (SELECT lv.mode FROM listing_visibility lv
+                JOIN contact_group_members m ON m.group_id = lv.group_id
+                JOIN users vu ON vu.id = $${userParamIdx}
+                WHERE lv.listing_id = l.id AND m.contact_phone_hash = vu.phone_hash
+                LIMIT 1) AS visibility_mode,
              -- Liste kartı için tek foto: cover (ilk) thumbnail
              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
              -- Auto-loop için tüm foto thumbnails (max 8, base64 değil thumbnail URL)
@@ -313,8 +335,12 @@ router.get('/', requireAuth, async (req, res, next) => {
         const tierInfo = tierMap.get(String(row.user_id)) || { tier: 2 };
         let tier = tierInfo.tier;
         const isSecond = tier === 2;
-        // HAYALET: kullanıcı hayalet VEYA ilan hayalet, VE bakan kendisi değilse → gizle
-        const isGhost = !!(row.seller_ghost_mode || row.listing_ghost_mode) && String(row.user_id) !== String(req.userId);
+        // HAYALET: kullanıcı hayalet VEYA ilan hayalet VEYA grup görünürlük kuralı 'ghost',
+        // VE bakan kendisi değilse → kimlik gizle
+        const isGhost = String(row.user_id) !== String(req.userId) && (
+          !!(row.seller_ghost_mode || row.listing_ghost_mode) ||
+          row.visibility_mode === 'ghost'
+        );
 
         // İLET — bu ilan 1. derecemdeki biri tarafından iletildi mi?
         // Öncelik: 1. derece (kendi tanıdığı) > forward > 2. derece.
@@ -992,6 +1018,26 @@ router.post('/', requireAuth, async (req, res, next) => {
         'INSERT INTO listing_photos (listing_id, url, thumb_url, ordering) VALUES ($1, $2, $3, $4)',
         [listing.id, value.photoUrls[i], thumbs[i] || null, i]
       );
+    }
+
+    // Grup bazlı görünürlük kuralları (varsa) — ilanın kime nasıl görüneceği
+    if (Array.isArray(value.visibilityRules) && value.visibilityRules.length > 0) {
+      // Sadece kullanıcının kendi grupları geçerli (güvenlik)
+      const groupIds = value.visibilityRules.map(r => r.group_id);
+      const validGroups = await client.query(
+        `SELECT id FROM contact_groups WHERE id = ANY($1::uuid[]) AND user_id = $2`,
+        [groupIds, req.userId]
+      );
+      const validSet = new Set(validGroups.rows.map(r => r.id));
+      for (const rule of value.visibilityRules) {
+        if (!validSet.has(rule.group_id)) continue;
+        await client.query(
+          `INSERT INTO listing_visibility (listing_id, group_id, mode)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (listing_id, group_id) DO UPDATE SET mode = EXCLUDED.mode`,
+          [listing.id, rule.group_id, rule.mode]
+        );
+      }
     }
     await client.query('COMMIT');
 
