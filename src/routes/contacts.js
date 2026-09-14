@@ -79,11 +79,13 @@ router.post('/sync', requireAuth, async (req, res, next) => {
 // Dönüş: [{ phone_hash, contact_name, is_registered }]
 router.get('/my', requireAuth, async (req, res, next) => {
   try {
+    // LEFT JOIN, EXISTS subquery'den daha hızlı (satır başına scan yerine tek pass)
     const { rows } = await pool.query(
       `SELECT uc.contact_phone_hash AS phone_hash,
               uc.contact_name,
-              EXISTS(SELECT 1 FROM users u WHERE u.phone_hash = uc.contact_phone_hash) AS is_registered
+              (u.id IS NOT NULL) AS is_registered
        FROM user_contacts uc
+       LEFT JOIN users u ON u.phone_hash = uc.contact_phone_hash
        WHERE uc.user_id = $1
        ORDER BY uc.contact_name NULLS LAST
        LIMIT 5000`,
