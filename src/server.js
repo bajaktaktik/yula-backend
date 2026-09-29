@@ -85,6 +85,8 @@ app.get('/public/stats', async (req, res) => {
         -- Website toplam ziyaretci (24 saat IP dedupe)
         -- ::int cast şart — bigint node-pg'de string döner, frontend guard reddeder
         COALESCE((SELECT value FROM site_counters WHERE key = 'total_visitors'), 0)::int AS visitors,
+        -- Mobil uygulama toplam açılış sayısı (kullanım sayısı)
+        COALESCE((SELECT value FROM site_counters WHERE key = 'app_opens'), 0)::int AS app_opens,
         -- Onaylı mağaza sayısı (henüz onaylanmamış olanlar dahil edilmez)
         (SELECT COUNT(*)::int FROM stores WHERE is_admin_approved = true) AS stores
     `);
@@ -115,6 +117,22 @@ setInterval(() => {
     if (ts < cutoff) visitorDedupeCache.delete(key);
   }
 }, 60 * 60 * 1000).unref();
+
+// Mobil uygulama açılış sayacı — her app boot'ta artar (dedup yok, her açılış sayılır).
+// abadan.com.tr'de "Kullanım Sayısı" olarak gösterilir.
+app.post('/public/app-opened', async (req, res) => {
+  try {
+    await pool.query(
+      `INSERT INTO site_counters (key, value) VALUES ('app_opens', 1)
+       ON CONFLICT (key) DO UPDATE SET value = site_counters.value + 1, updated_at = now()`
+    );
+    publicStatsCache.ts = 0;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[public/app-opened] fail:', err.message);
+    res.status(500).json({ error: 'app_open_track_failed' });
+  }
+});
 
 app.post('/public/visit', async (req, res) => {
   try {

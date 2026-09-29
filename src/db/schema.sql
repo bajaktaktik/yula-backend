@@ -629,6 +629,8 @@ CREATE TABLE IF NOT EXISTS site_counters (
 );
 INSERT INTO site_counters (key, value) VALUES ('total_visitors', 0)
   ON CONFLICT (key) DO NOTHING;
+INSERT INTO site_counters (key, value) VALUES ('app_opens', 0)
+  ON CONFLICT (key) DO NOTHING;
 
 -- =====================================================================
 -- Seed kategoriler (sahibinden.com tarzı, 2 seviyeli hiyerarsi)
