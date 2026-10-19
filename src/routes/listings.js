@@ -848,6 +848,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     }
 
     // 2. derece kontrolü — sadece ilk kontrolde bulunamazsa gönder
+    let isStranger = false;
     if (!isOwn && !inFirstDegree) {
       const secondMap = await graph.getSecondDegreeMap(req.userId);
       const info = secondMap.get(listing.user_id);
@@ -863,7 +864,23 @@ router.get('/:id', requireAuth, async (req, res, next) => {
           mutual_count: 1,
         };
       } else {
-        return res.status(403).json({ error: 'not_in_your_network' });
+        // YABANCI — yalnızca ilan "açık" ise (grup kuralı yok + default show)
+        const vis = await pool.query(
+          `SELECT COUNT(*)::int AS n FROM listing_visibility WHERE listing_id = $1`,
+          [req.params.id]
+        );
+        const hasRules = vis.rows[0].n > 0;
+        const defMode = listing.default_visibility_mode;
+        const isPublicToStrangers =
+          !hasRules &&
+          (defMode == null || defMode === 'show') &&
+          !listing.ghost_mode && !listing.seller_ghost_mode;
+        if (isPublicToStrangers) {
+          tier = 0;
+          isStranger = true;
+        } else {
+          return res.status(403).json({ error: 'not_in_your_network' });
+        }
       }
     }
 
@@ -918,9 +935,11 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     res.json({
       ...listing,
       // 2. derece için gerçek isim gizli, hayalet için de
+      // YABANCI (stranger) için gerçek display_name DÖNER — rehber adı yok
       seller_name: (isSecond || isGhost) ? null : listing.seller_name,
       seller_avatar: (isSecond || isGhost) ? null : listing.seller_avatar,
       is_ghost: isGhost, // frontend WhatsApp buton gizler, 👻 gösterir
+      is_stranger: isStranger, // frontend WhatsApp buton gizler, farklı renk
       user_id: isSecond ? null : listing.user_id, // 2. derece'de user_id de gizli (mesaj yönlendirme via'ya)
       real_user_id: listing.user_id, // referans için (mesajlaşmada backend kullanır)
       tier,
@@ -1352,6 +1371,96 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
 
     res.status(204).end();
   } catch (err) {
+    next(err);
+  }
+});
+
+// GET /listings/strangers — YABANCI İLANLAR
+// Kullanıcının 1. veya 2. derece bağlantılarına ait OLMAYAN ilanlar.
+// Mahremiyet kuralları:
+//   - Hayalet ilanlar YOK (yabancı için hayalet anlamsız)
+//   - Grup bazlı whitelist/ghost kuralı olan ilanlar YOK (sahibi özel kurdu)
+//   - Yalnız default_visibility_mode='show' (ya da NULL) ilanlar
+//   - Cinsiyet kısıtlı ilanlar yine uygun cinsiyete
+//   - Pending hayalet onayı YOK
+router.get('/strangers', requireAuth, async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '40', 10), 100);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const q = String(req.query.q || '').trim();
+    const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
+
+    const visible = await graph.getVisibleUserIds(req.userId); // 1. derece
+    const secondMap = await graph.getSecondDegreeMap(req.userId); // 2. derece
+
+    // Hariç tutulacak user_id'ler: 1. derece + 2. derece + kendisi
+    const excludeIds = Array.from(new Set([
+      ...Array.from(visible.keys()),
+      ...Array.from(secondMap.keys()),
+      req.userId,
+    ]));
+
+    const myGender = await getMyGender(req.userId);
+
+    // Parametre sırası: $1=excludeIds, $2=req.userId (favori sorgusu için), ...q/freeOnly, limit, offset
+    const params = [excludeIds, req.userId];
+    const filters = [
+      `l.user_id <> ALL($1::uuid[])`,
+      `l.status = 'active'`,
+      `l.admin_removed_at IS NULL`,
+      `l.ghost_mode = false`, // hayalet YOK
+      // Yabancıya grup kuralı olan ilan göstermeyiz
+      `NOT EXISTS (SELECT 1 FROM listing_visibility lv WHERE lv.listing_id = l.id)`,
+      // Default visibility 'ghost' olanları da gösterme
+      `(l.default_visibility_mode IS NULL OR l.default_visibility_mode = 'show')`,
+      genderFilter(myGender),
+    ];
+
+    if (q) {
+      params.push(`%${q}%`);
+      filters.push(`(l.title ILIKE $${params.length} OR l.description ILIKE $${params.length})`);
+    }
+    if (freeOnly) {
+      filters.push(`(l.price = 0 OR l.is_negotiable = TRUE)`);
+    }
+    params.push(limit, offset);
+    const limitIdx = params.length - 1;
+    const offsetIdx = params.length;
+
+    const { rows } = await pool.query(
+      `SELECT l.id, l.title, l.description, l.price, l.currency, l.is_negotiable,
+              l.location_city, l.location_district, l.created_at,
+              l.category_id, c.name AS category_name, c.slug AS category_slug,
+              l.user_id,
+              -- Yabancı için gerçek display_name (rehber adı yok)
+              u.display_name AS seller_name,
+              u.avatar_url AS seller_avatar,
+              (SELECT COALESCE(p.thumb_url, p.url) FROM listing_photos p
+               WHERE p.listing_id = l.id ORDER BY p.ordering ASC LIMIT 1) AS cover_photo,
+              (SELECT json_agg(COALESCE(p.thumb_url, p.url) ORDER BY p.ordering)
+               FROM (SELECT thumb_url, url, ordering FROM listing_photos
+                     WHERE listing_id = l.id ORDER BY ordering LIMIT 8) p) AS all_photos,
+              (SELECT COUNT(*)::int FROM listing_photos p WHERE p.listing_id = l.id) AS photo_count,
+              EXISTS(SELECT 1 FROM favorites WHERE user_id = $2 AND listing_id = l.id) AS is_favorite
+       FROM listings l
+       JOIN users u ON u.id = l.user_id
+       LEFT JOIN categories c ON c.id = l.category_id
+       WHERE ${filters.join(' AND ')}
+       ORDER BY l.created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
+    );
+
+    const result = rows.map(r => ({
+      ...r,
+      is_stranger: true,
+      tier: 0, // yabancı
+      photos: (r.all_photos && r.all_photos.length > 0) ? r.all_photos : (r.cover_photo ? [r.cover_photo] : []),
+    }));
+
+    res.json({ listings: result, count: result.length });
+  } catch (err) {
+    console.error('[listings/strangers] fail:', err.message);
     next(err);
   }
 });
