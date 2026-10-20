@@ -1394,6 +1394,12 @@ router.get('/strangers', requireAuth, async (req, res, next) => {
     const offset = parseInt(req.query.offset || '0', 10);
     const q = String(req.query.q || '').trim();
     const freeOnly = req.query.freeOnly === '1' || req.query.freeOnly === 'true';
+    const categoryId = req.query.categoryId ? parseInt(req.query.categoryId, 10) : null;
+    const minPrice = req.query.minPrice ? Number(req.query.minPrice) : null;
+    const maxPrice = req.query.maxPrice ? Number(req.query.maxPrice) : null;
+    const cities = req.query.cities
+      ? req.query.cities.toString().split(',').map((s) => s.trim()).filter(Boolean)
+      : null;
 
     const visible = await graph.getVisibleUserIds(req.userId); // 1. derece
     const secondMap = await graph.getSecondDegreeMap(req.userId); // 2. derece
@@ -1421,9 +1427,33 @@ router.get('/strangers', requireAuth, async (req, res, next) => {
       genderFilter(myGender),
     ];
 
+    if (categoryId) {
+      params.push(categoryId);
+      filters.push(`l.category_id IN (
+        WITH RECURSIVE descendants AS (
+          SELECT id FROM categories WHERE id = $${params.length}
+          UNION ALL
+          SELECT c.id FROM categories c
+          INNER JOIN descendants d ON c.parent_id = d.id
+        )
+        SELECT id FROM descendants
+      )`);
+    }
     if (q) {
       params.push(`%${q}%`);
       filters.push(`(l.title ILIKE $${params.length} OR l.description ILIKE $${params.length})`);
+    }
+    if (minPrice != null && !Number.isNaN(minPrice)) {
+      params.push(minPrice);
+      filters.push(`l.price >= $${params.length}`);
+    }
+    if (maxPrice != null && !Number.isNaN(maxPrice)) {
+      params.push(maxPrice);
+      filters.push(`l.price <= $${params.length}`);
+    }
+    if (cities && cities.length > 0) {
+      params.push(cities);
+      filters.push(`LOWER(l.location_city) = ANY(SELECT LOWER(c) FROM unnest($${params.length}::text[]) AS c)`);
     }
     if (freeOnly) {
       filters.push(`(l.price = 0 OR l.is_negotiable = TRUE)`);
