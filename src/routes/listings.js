@@ -775,11 +775,6 @@ router.get('/:id/intermediaries', requireAuth, async (req, res, next) => {
 // GET /listings/:id
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    // Guard: /strangers gibi non-UUID path'leri bir sonraki route handler'a bırak.
-    // Express sırayla eşleştiği için /strangers endpoint dosyanın altındaysa buraya düşer.
-    if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(req.params.id)) {
-      return next();
-    }
     const visible = await graph.getVisibleUserIds(req.userId);
     const myGender = await getMyGender(req.userId);
     const { rows } = await pool.query(
